@@ -1,0 +1,4 @@
+{:project-id "hive-milvus"
+ :parent "hive"
+ :description "Milvus vector database addon for hive-mcp (IMemoryStore + IAddon)"
+ :tags ["vectordb" "milvus" "addon" "memory-store"]}
