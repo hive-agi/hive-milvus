@@ -5,7 +5,7 @@
  :addon/init-fn      "create-addon"
  :addon/config       {:host "${MILVUS_HOST}"
                       :port "${MILVUS_PORT}"
-                      :collection-name "hive-mcp-memory"}
+                      :collection-name "hive_mcp_memory"}
  :addon/capabilities #{:vector-search :health-reporting}
  :addon/dependencies #{}
  :addon/description  "Milvus vector database backend for IMemoryStore"}

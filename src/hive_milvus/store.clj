@@ -190,7 +190,7 @@
   (connect! [_this config]
     (try
       (let [milvus-config (select-keys config [:host :port :token :database :secure])
-            coll-name     (or (:collection-name config) "hive-mcp-memory")]
+            coll-name     (or (:collection-name config) "hive_mcp_memory")]
         (swap! config-atom merge config)
         (milvus/connect! milvus-config)
         (let [dimension (embed-svc/get-dimension-for coll-name)]
@@ -219,7 +219,7 @@
     (let [start-ms (System/currentTimeMillis)
           ts       (now-iso)]
       (try
-        (let [coll-name (:collection-name @config-atom "hive-mcp-memory")
+        (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
               exists?   @(milvus/has-collection coll-name)
               latency   (- (System/currentTimeMillis) start-ms)]
           {:healthy?    exists?
@@ -239,24 +239,24 @@
   ;; --- CRUD Operations ---
 
   (add-entry! [_this entry]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
           record    (entry->record entry coll-name)]
       @(milvus/add coll-name [record] :upsert? true)
       (:id record)))
 
   (get-entry [_this id]
-    (get-entry-by-id (:collection-name @config-atom "hive-mcp-memory") id))
+    (get-entry-by-id (:collection-name @config-atom "hive_mcp_memory") id))
 
   (update-entry! [_this id updates]
-    (update-entry-fields! (:collection-name @config-atom "hive-mcp-memory")
+    (update-entry-fields! (:collection-name @config-atom "hive_mcp_memory")
                           id updates))
 
   (delete-entry! [_this id]
-    @(milvus/delete (:collection-name @config-atom "hive-mcp-memory") [id])
+    @(milvus/delete (:collection-name @config-atom "hive_mcp_memory") [id])
     true)
 
   (query-entries [_this opts]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
           {:keys [limit] :or {limit 100}} opts
           filter-expr (build-filter-expr opts)
           results (if filter-expr
@@ -269,7 +269,7 @@
   ;; --- Semantic Search ---
 
   (search-similar [_this query-text opts]
-    (let [coll-name   (:collection-name @config-atom "hive-mcp-memory")
+    (let [coll-name   (:collection-name @config-atom "hive_mcp_memory")
           {:keys [limit type project-ids exclude-tags]
            :or   {limit 10}} opts
           query-vec   (embed-svc/embed-for-collection coll-name query-text)
@@ -285,12 +285,12 @@
 
   (supports-semantic-search? [_this]
     (embed-svc/provider-available-for?
-      (:collection-name @config-atom "hive-mcp-memory")))
+      (:collection-name @config-atom "hive_mcp_memory")))
 
   ;; --- Expiration Management ---
 
   (cleanup-expired! [_this]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
           now       (now-iso)
           expired   @(milvus/query-scalar coll-name
                        {:filter (str "expires != \"\" and expires < \"" now "\"")
@@ -303,7 +303,7 @@
       (count expired)))
 
   (entries-expiring-soon [_this days opts]
-    (let [coll-name  (:collection-name @config-atom "hive-mcp-memory")
+    (let [coll-name  (:collection-name @config-atom "hive_mcp_memory")
           now        (java.time.ZonedDateTime/now (java.time.ZoneId/systemDefault))
           horizon    (str (.plusDays now days))
           now-str    (str now)
@@ -319,7 +319,7 @@
   ;; --- Duplicate Detection ---
 
   (find-duplicate [_this type content-hash opts]
-    (let [coll-name  (:collection-name @config-atom "hive-mcp-memory")
+    (let [coll-name  (:collection-name @config-atom "hive_mcp_memory")
           filter-cls (cond-> [(str "type == \"" (name type) "\"")
                               (str "content_hash == \"" content-hash "\"")]
                        (:project-id opts)
@@ -333,7 +333,7 @@
   ;; --- Store Management ---
 
   (store-status [_this]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")]
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
       {:backend          "milvus"
        :configured?      (milvus/connected?)
        :entry-count      (try
@@ -345,7 +345,7 @@
        :supports-search? (milvus/connected?)}))
 
   (reset-store! [_this]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")]
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
       (when @(milvus/has-collection coll-name)
         @(milvus/drop-collection coll-name))
       true))
@@ -356,20 +356,20 @@
   proto/IMemoryStoreWithAnalytics
 
   (log-access! [_this id]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")]
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
       (when-let [entry (get-entry-by-id coll-name id)]
         (update-entry-fields! coll-name id
           {:access-count (inc (or (:access-count entry) 0))}))))
 
   (record-feedback! [_this id feedback]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")]
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
       (when-let [entry (get-entry-by-id coll-name id)]
         (let [field     (feedback->field feedback)
               new-count (inc (or (get entry field) 0))]
           (update-entry-fields! coll-name id {field new-count})))))
 
   (get-helpfulness-ratio [_this id]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")]
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
       (when-let [entry (get-entry-by-id coll-name id)]
         (helpfulness-map entry))))
 
@@ -379,7 +379,7 @@
   proto/IMemoryStoreWithStaleness
 
   (update-staleness! [_this id staleness-opts]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
           {:keys [beta source depth]} staleness-opts]
       (update-entry-fields! coll-name id
         (cond-> {}
@@ -388,7 +388,7 @@
           depth  (assoc :staleness-depth depth)))))
 
   (get-stale-entries [_this threshold opts]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
           {:keys [project-id type]} opts
           filter-expr (build-filter-expr {:project-id project-id :type type
                                           :include-expired? true})
@@ -400,7 +400,7 @@
            vec)))
 
   (propagate-staleness! [_this source-id depth]
-    (let [coll-name (:collection-name @config-atom "hive-mcp-memory")]
+    (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
       (when-let [entry (get-entry-by-id coll-name source-id)]
         (let [kg-outgoing (:kg-outgoing entry)]
           (reduce (fn [cnt dep-id]
@@ -422,7 +422,7 @@
    Options (also configurable via connect!):
      :host            - Milvus gRPC host (default: localhost)
      :port            - Milvus gRPC port (default: 19530)
-     :collection-name - Collection name (default: hive-mcp-memory)
+     :collection-name - Collection name (default: hive_mcp_memory)
 
    Returns an IMemoryStore implementation.
 
@@ -436,5 +436,5 @@
    (log/info "Creating MilvusMemoryStore" (when (seq opts) opts))
    (->MilvusMemoryStore (atom (merge {:host "localhost"
                                        :port 19530
-                                       :collection-name "hive-mcp-memory"}
+                                       :collection-name "hive_mcp_memory"}
                                       opts)))))

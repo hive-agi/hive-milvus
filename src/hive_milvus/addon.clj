@@ -34,7 +34,7 @@
                          (update :port #(if (and % (not= % ""))
                                           (if (string? %) (parse-long %) %)
                                           19530))
-                         (update :collection-name #(if (seq %) % "hive-mcp-memory")))
+                         (update :collection-name #(if (seq %) % "hive_mcp_memory")))
             store (store/create-store
                     (select-keys resolved [:host :port :collection-name
                                            :token :database :secure]))
@@ -79,10 +79,15 @@
 (defn create-addon
   "Create a MilvusAddon instance.
 
+   Accepts an optional config map (passed by manifest init-from-manifest!).
+   Actual configuration is applied during initialize!.
+
    Example:
      (require '[hive-mcp.addons.core :as addons])
      (addons/register-addon! (create-addon))
      (addons/init-addon! \"hive.milvus\"
        {:host \"milvus.milvus.svc\" :port 19530})"
-  []
-  (->MilvusAddon (atom nil)))
+  ([]
+   (->MilvusAddon (atom nil)))
+  ([_config]
+   (->MilvusAddon (atom nil))))
