@@ -1,0 +1,11 @@
+{:addon/id           "hive.milvus"
+ :addon/type         :native
+ :addon/version      "0.1.0"
+ :addon/init-ns      "hive-milvus.addon"
+ :addon/init-fn      "create-addon"
+ :addon/config       {:host "${MILVUS_HOST}"
+                      :port "${MILVUS_PORT}"
+                      :collection-name "hive-mcp-memory"}
+ :addon/capabilities #{:vector-search :health-reporting}
+ :addon/dependencies #{}
+ :addon/description  "Milvus vector database backend for IMemoryStore"}

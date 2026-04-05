@@ -28,10 +28,17 @@
 
   (initialize! [_this config]
     (try
-      (let [store (store/create-store
-                    (select-keys config [:host :port :collection-name
-                                         :token :database :secure]))
-            result (mem-proto/connect! store config)]
+      (let [;; Apply defaults for env vars that resolved to empty string
+            resolved (-> config
+                         (update :host #(if (seq %) % "localhost"))
+                         (update :port #(if (and % (not= % ""))
+                                          (if (string? %) (parse-long %) %)
+                                          19530))
+                         (update :collection-name #(if (seq %) % "hive-mcp-memory")))
+            store (store/create-store
+                    (select-keys resolved [:host :port :collection-name
+                                           :token :database :secure]))
+            result (mem-proto/connect! store resolved)]
         (if (:success? result)
           (do
             (reset! store-atom store)
