@@ -17,13 +17,13 @@
  {:dev  {:extra-paths ["dev" "test"]
          :extra-deps {nrepl/nrepl {:mvn/version "1.6.0"}
                       cider/cider-nrepl {:mvn/version "0.58.0"}}}
-  :local {:override-deps {io.github.hive-agi/milvus-clj {:local/root "../milvus-clj"}
-                          io.github.hive-agi/hive-di   {:local/root "../hive-di"}}}
+  :local {:override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.1.0" :git/sha "06d41cc"}
+                          io.github.hive-agi/hive-di   {:git/tag "v0.1.1" :git/sha "9f98359"}}}
   :migrate {:extra-deps {org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
                          org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
-                         io.github.hive-agi/hive-dsl {:local/root "../hive-dsl"}}
-            :override-deps {io.github.hive-agi/milvus-clj {:local/root "../milvus-clj"}
-                            io.github.hive-agi/hive-di   {:local/root "../hive-di"}}}
+                         io.github.hive-agi/hive-dsl {:git/tag "v0.3.8" :git/sha "6f44e1b"}}
+            :override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.1.0" :git/sha "06d41cc"}
+                            io.github.hive-agi/hive-di   {:git/tag "v0.1.1" :git/sha "9f98359"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
   :test {:extra-paths ["test"]
          :extra-deps {lambdaisland/kaocha         {:mvn/version "1.91.1392"}
