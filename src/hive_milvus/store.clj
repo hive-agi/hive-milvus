@@ -136,7 +136,7 @@
                   (into (map (fn [t] (str "tags like \"%" t "%\"")) tags))
 
                   (and exclude-tags (seq exclude-tags))
-                  (into (map (fn [t] (str "tags not like \"%" t "%\"")) exclude-tags))
+                  (into (map (fn [t] (str "not (tags like \"%" t "%\")")) exclude-tags))
 
                   (not include-expired?)
                   (conj (str "(expires == \"\" or expires > \""
