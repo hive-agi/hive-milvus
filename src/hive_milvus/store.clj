@@ -235,12 +235,19 @@
     (max 100 (+ capped jitter))))
 
 (defn- try-reconnect!
-  "Single reconnect attempt using stored config. Returns true on success."
+  "Single reconnect attempt using stored config. Returns true on success.
+
+   Carries `:transport` through so the reactive heal loop reconnects
+   with whichever transport the store was originally configured with —
+   essential for the hybrid-transport story (PR-3): the same heal
+   machinery serves both `:grpc` (rebuild the channel) and `:http`
+   (idempotent re-init of the JDK HttpClient)."
   [config-atom]
   (try
     (let [cfg @config-atom
           milvus-cfg (into {} (filter (comp some? val))
-                           (select-keys cfg [:host :port :token :database :secure]))
+                           (select-keys cfg [:transport :host :port :token
+                                             :database :secure]))
           milvus-cfg (merge {:connect-timeout-ms 30000} milvus-cfg)]
       (milvus/connect! milvus-cfg)
       (log/info "Milvus reconnected successfully")
@@ -491,9 +498,13 @@
   ;; --- Connection Lifecycle ---
 
   (connect! [_this config]
-    (let [;; Don't overwrite env-var defaults with nil from config
+    (let [;; Don't overwrite env-var defaults with nil from config.
+          ;; :transport opt is passed through (PR-3) so callers can pick
+          ;; the underlying milvus-clj transport. Defaults to :grpc inside
+          ;; the api.clj shim if omitted.
           milvus-config (into {} (filter (comp some? val))
-                              (select-keys config [:host :port :token :database :secure
+                              (select-keys config [:transport
+                                                   :host :port :token :database :secure
                                                    :connect-timeout-ms
                                                    :keep-alive-time-ms
                                                    :keep-alive-timeout-ms
@@ -501,14 +512,15 @@
                                                    :idle-timeout-ms]))
           ;; Tuned for fragile intermediaries (Tailscale userspace netstack,
           ;; cloud NAT). Higher connect timeout for relay paths.
-          ;; Keepalive pings (30s) below typical idle-flow GC windows (60-120s);
-          ;; without-calls? is critical — else gRPC only pings during active
-          ;; RPCs and idle clients die silently with
-          ;; "UNAVAILABLE: Keepalive failed. The connection is likely gone".
-          ;; Caller-supplied values in `config` win via merge order.
+          ;; Keepalive pings tightened to 10 s in PR-3 (down from 30 s) —
+          ;; below gVisor's idle-flow GC window. without-calls? is critical
+          ;; — else gRPC only pings during active RPCs and idle clients die
+          ;; silently with "UNAVAILABLE: Keepalive failed. The connection
+          ;; is likely gone". Caller-supplied values in `config` win via
+          ;; merge order. If even 10 s leaks, switch :transport to :http.
           milvus-config (merge {:connect-timeout-ms        30000
-                                :keep-alive-time-ms        30000
-                                :keep-alive-timeout-ms     10000
+                                :keep-alive-time-ms        10000
+                                :keep-alive-timeout-ms     20000
                                 :keep-alive-without-calls? true}
                                milvus-config)
           coll-name     (or (:collection-name config) "hive_mcp_memory")

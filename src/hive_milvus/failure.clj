@@ -6,10 +6,17 @@
    `{:success? false :errors [...] :reconnecting? ...}` map shape that
    existing protocol callers expect.
 
-   No side effects. No milvus-clj calls. Just shapes."
+   Classification delegates to `milvus-clj.client/classify-error`, which
+   dispatches on the `::client/transport` ex-data tag set by each
+   transport. This means HTTP-thrown failures (IOException, HTTP 5xx)
+   are recognized just as well as gRPC StatusRuntimeException ones —
+   essential for PR-3's hybrid-transport story where the same store.clj
+   resilience machinery serves both.
+
+   No side effects. No milvus/* singleton calls. Just shapes."
   (:require [clojure.string :as str]
-            [hive-dsl.adt :as adt])
-  (:import [io.grpc StatusRuntimeException]))
+            [hive-dsl.adt :as adt]
+            [milvus-clj.client :as client]))
 
 ;; =============================================================================
 ;; ADT
@@ -22,10 +29,14 @@
   [:milvus/reconnect-timeout {:message string?}])
 
 ;; =============================================================================
-;; Classifier (pure — no milvus/*, no I/O)
+;; Classifier (pure — no I/O)
 ;; =============================================================================
 
 (def ^:private transient-markers
+  "Fallback markers for non-tagged exceptions (legacy gRPC paths that
+   don't go through the new `client/classify-error` dispatch). The
+   primary path uses the ::client/transport ex-data tag, which is set
+   by both `transport.grpc` and `transport.http`."
   ["not connected"
    "UNAVAILABLE"
    "DEADLINE_EXCEEDED"
@@ -43,16 +54,34 @@
 (defn classify
   "Classify a Throwable into a MilvusFailure ADT value.
 
-   - io.grpc.StatusRuntimeException        -> :milvus/transient
-   - Exception whose message matches one
-     of the transient markers               -> :milvus/transient
-   - Anything else                          -> :milvus/fatal"
+   Primary path: delegate to `milvus-clj.client/classify-error`, which
+   dispatches on the transport-tagged ex-data and returns
+   `:connection-failure | :retryable | :fatal`. Both `:connection-failure`
+   and `:retryable` map to `:milvus/transient` (the resilient retry path
+   handles both the same way); `:fatal` maps to `:milvus/fatal`.
+
+   Fallback path (for legacy untagged exceptions): match the throwable's
+   message against `transient-markers`. Preserved so that pre-PR-3 code
+   paths still classify correctly during the migration.
+
+   Returns a `MilvusFailure` ADT value, never throws."
   [^Throwable t]
-  (let [msg (or (some-> t .getMessage) "")]
-    (if (or (instance? StatusRuntimeException t)
-            (transient-message? msg))
+  (let [msg (or (some-> t .getMessage) "")
+        category (try (client/classify-error t)
+                      (catch Throwable _ nil))]
+    (cond
+      (= :fatal category)
+      (milvus-failure :milvus/fatal {:message msg})
+
+      (or (= :connection-failure category) (= :retryable category))
       (milvus-failure :milvus/transient {:message msg})
-      (milvus-failure :milvus/fatal     {:message msg}))))
+
+      ;; Fallback: legacy marker matching for untagged exceptions.
+      (transient-message? msg)
+      (milvus-failure :milvus/transient {:message msg})
+
+      :else
+      (milvus-failure :milvus/fatal {:message msg}))))
 
 (defn transient?
   "True if failure is a :milvus/transient variant."
