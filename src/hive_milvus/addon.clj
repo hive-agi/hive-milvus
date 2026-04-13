@@ -28,24 +28,35 @@
 
   (initialize! [_this config]
     (try
-      (let [;; Apply defaults for env vars that resolved to empty string
+      (let [;; Apply defaults for env vars that resolved to empty string.
+            ;; :transport defaults to :grpc when unset/empty; accepts a
+            ;; keyword or a string ("grpc"/"http") from the manifest's
+            ;; ${MILVUS_TRANSPORT} env-var resolution.
+            coerce-transport (fn [v]
+                               (cond
+                                 (keyword? v) v
+                                 (and (string? v) (seq v)) (keyword v)
+                                 :else :grpc))
             resolved (-> config
                          (update :host #(if (seq %) % "localhost"))
                          (update :port #(if (and % (not= % ""))
                                           (if (string? %) (parse-long %) %)
                                           19530))
-                         (update :collection-name #(if (seq %) % "hive_mcp_memory")))
+                         (update :collection-name #(if (seq %) % "hive_mcp_memory"))
+                         (update :transport coerce-transport))
             store (store/create-store
                     (select-keys resolved [:host :port :collection-name
-                                           :token :database :secure]))
+                                           :token :database :secure
+                                           :transport]))
             result (mem-proto/connect! store resolved)]
         (if (:success? result)
           (do
             (reset! store-atom store)
             (mem-proto/set-store! store)
             (log/info "MilvusAddon initialized — set as active memory store"
-                      {:host (:host config "localhost")
-                       :port (:port config 19530)})
+                      {:host      (:host resolved)
+                       :port      (:port resolved)
+                       :transport (:transport resolved)})
             {:success? true :errors [] :metadata {:backend "milvus"}})
           {:success? false
            :errors (:errors result)

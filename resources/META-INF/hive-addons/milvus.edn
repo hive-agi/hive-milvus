@@ -5,7 +5,13 @@
  :addon/init-fn      "create-addon"
  :addon/config       {:host "${MILVUS_HOST}"
                       :port "${MILVUS_PORT}"
-                      :collection-name "hive_mcp_memory"}
+                      :collection-name "hive_mcp_memory"
+                      ;; :transport — :grpc (default) or :http.
+                      ;; HTTP transport eliminates the gVisor idle-flow
+                      ;; pruning class entirely (REST is stateless), at
+                      ;; the cost of REST-vs-gRPC overhead per call.
+                      ;; Empty / unset → :grpc.
+                      :transport "${MILVUS_TRANSPORT}"}
  :addon/capabilities #{:vector-search :health-reporting}
  :addon/dependencies #{}
  :addon/description  "Milvus vector database backend for IMemoryStore"}
