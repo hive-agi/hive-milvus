@@ -1,0 +1,8 @@
+{:combined-no-expiry
+ "type == \"decision\" and project_id == \"hive-mcp\" and tags like \"%architecture%\" and not (tags like \"%deprecated%\")",
+ :empty nil,
+ :exclude-tags "not (tags like \"%carto%\")",
+ :project-id "project_id == \"hive-mcp\"",
+ :project-ids "project_id in [\"hive-mcp\", \"hive-test\"]",
+ :type-only "type == \"decision\"",
+ :with-tags "tags like \"%migration%\" and tags like \"%kg%\""}

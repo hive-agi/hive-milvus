@@ -1,0 +1,7 @@
+{:all-helpful
+ {:helpful-count 10, :unhelpful-count 0, :total 10, :ratio 1.0},
+ :mixed {:helpful-count 7, :unhelpful-count 3, :total 10, :ratio 0.7},
+ :nil-counts
+ {:helpful-count 0, :unhelpful-count 0, :total 0, :ratio 0.0},
+ :zero-total
+ {:helpful-count 0, :unhelpful-count 0, :total 0, :ratio 0.0}}

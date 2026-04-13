@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: migrate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: migration-data
+  namespace: migrate
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chroma-to-milvus
+  namespace: migrate
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: chroma-to-milvus
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+      - name: ghcr-creds
+      containers:
+      - name: migrate
+        image: ghcr.io/hive-agi/hive-milvus-migrate:v0.1.5
+        env:
+        - name: MILVUS_HOST
+          value: "milvus.milvus.svc"
+        - name: MILVUS_PORT
+          value: "19530"
+        - name: OLLAMA_HOST
+          value: "ollama.ollama.svc:11434"
+        - name: CHROMA_SQLITE_PATH
+          value: "/data/chroma-20260404T202814.sqlite3"
+        - name: MIGRATE_CURSOR_PATH
+          value: "/data/migration-cursor.edn"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "2"
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: migration-data

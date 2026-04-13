@@ -1,0 +1,17 @@
+{:paths ["src"]
+ :deps {org.clojure/clojure       {:mvn/version "1.12.1"}
+        org.clojure/data.json     {:mvn/version "2.5.1"}
+        com.taoensso/timbre       {:mvn/version "6.8.0"}
+        org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
+        org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
+        io.github.hive-agi/milvus-clj {:local/root "../milvus-clj"}
+        io.github.hive-agi/hive-di {:local/root "../hive-di"}
+        io.github.hive-agi/hive-dsl {:local/root "../hive-dsl"}}
+
+ :aliases
+ {:with-milvus {:extra-deps {io.github.hive-agi/milvus-clj {:local/root "../milvus-clj"}}}
+  :dry-run     {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/run-all! {:dry-run? true}))"]}
+  :run         {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/run-all! {}))"]}
+  :run-single  {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/run! {}))"]}
+  :list        {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (let [cols (m/list-collections (first *command-line-args*))] (doseq [c cols] (println (format \"%-40s %5d\" (:name c) (:entry-count c))))))"]}
+  :sync        {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}}}

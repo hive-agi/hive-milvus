@@ -1,0 +1,13 @@
+FROM clojure:temurin-21-tools-deps-1.12.0.1530-bookworm-slim
+
+WORKDIR /app
+
+# Use migration-specific deps (no hive-mcp, avoids circular dep chain)
+COPY deps.migrate.edn deps.edn
+RUN clojure -P
+
+# Source
+COPY src/ src/
+
+ENTRYPOINT ["clojure", "-e"]
+CMD ["(do (require '[hive-milvus.migrate :as m]) (m/run-all! {:skip-empty false :reset-cursor? true :collections [\"hive-ingest\" \"hive-mcp-plans\" \"ingest-df4cee33\" \"ingest-a6f8f28e\" \"ingest-0e3c7772\" \"ingest-135c5187\" \"ingest-f42d6f4e\" \"ingest-172d0cb1\"]}))"]

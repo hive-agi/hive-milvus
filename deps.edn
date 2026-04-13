@@ -11,7 +11,10 @@
         io.github.hive-agi/hive-mcp {:git/tag "v0.16.3" :git/sha "030e7be"}
 
         ;; Config DI — typed env var resolution with ADT backing
-        io.github.hive-agi/hive-di {:git/tag "v0.1.2" :git/sha "7916f3d"}}
+        io.github.hive-agi/hive-di {:git/tag "v0.1.2" :git/sha "7916f3d"}
+
+        ;; Bounded parallelism — queue drain uses hive-weave.parallel/bounded-pmap
+        io.github.hive-agi/hive-weave {:git/tag "v0.1.0" :git/sha "328908d"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]

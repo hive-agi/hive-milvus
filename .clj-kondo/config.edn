@@ -1,0 +1,15 @@
+{:lint-as {hive-dsl.result/let-ok clojure.core/let
+           ;; hive-test property macros expand to defspec
+           hive-test.properties/defprop-total clojure.test/deftest
+           hive-test.properties/defprop-idempotent clojure.test/deftest
+           hive-test.properties/defprop-roundtrip clojure.test/deftest
+           hive-test.properties/defprop-complement clojure.test/deftest
+           hive-test.properties/defprop-fsm-terminates clojure.test/deftest
+           hive-test.properties/defprops-monad clojure.test/deftest}
+
+ ;; defadt expands into 4 generated vars (TypeName, type-name,
+ ;; type-name?, ->type-name) which clj-kondo can't see through the macro.
+ ;; Suppress unresolved-symbol in nses that use defadt at the top level.
+ :config-in-ns
+ {hive-milvus.failure
+  {:linters {:unresolved-symbol {:level :off}}}}}

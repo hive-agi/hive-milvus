@@ -1,0 +1,15 @@
+{:empty [],
+ :interleaved
+ [{:op :add-entry!, :id "a", :args [{:v 10}]}
+  {:op :add-entry!, :id "b", :args [{:v 2}]}
+  {:op :update-entry!, :id "b", :args ["b" {:v 20}]}],
+ :mixed-with-singleton
+ [{:op :add-entry!, :id "a", :args [{:v 2}]}
+  {:op :cleanup-expired!, :args []}],
+ :repeat-add [{:op :add-entry!, :id "a", :args [{:v 3}]}],
+ :singleton [{:op :cleanup-expired!, :args []}],
+ :singletons-collapse [{:op :cleanup-expired!, :args []}],
+ :three-ids
+ [{:op :add-entry!, :id "a", :args [{:v 1}]}
+  {:op :update-entry!, :id "b", :args ["b" {:v 2}]}
+  {:op :delete-entry!, :id "c", :args ["c"]}]}
