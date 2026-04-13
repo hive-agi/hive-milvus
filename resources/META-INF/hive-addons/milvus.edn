@@ -11,6 +11,11 @@
                       ;; pruning class entirely (REST is stateless), at
                       ;; the cost of REST-vs-gRPC overhead per call.
                       ;; Empty / unset → :grpc.
+                      ;;
+                      ;; Port note: Milvus 2.5+ serves BOTH gRPC and REST
+                      ;; on port 19530 via the proxy. Port 9091 is the
+                      ;; metrics/health endpoint, NOT the REST API. Keep
+                      ;; MILVUS_PORT=19530 even when transport is :http.
                       :transport "${MILVUS_TRANSPORT}"}
  :addon/capabilities #{:vector-search :health-reporting}
  :addon/dependencies #{}
