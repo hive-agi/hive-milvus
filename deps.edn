@@ -14,7 +14,7 @@
         io.github.hive-agi/hive-di {:git/tag "v0.2.0" :git/sha "6ff3e60"}
 
         ;; Bounded parallelism — queue drain uses hive-weave.parallel/bounded-pmap
-        io.github.hive-agi/hive-weave {:git/tag "v0.1.0" :git/sha "63dae4a"}}
+        io.github.hive-agi/hive-weave {:git/tag "v0.2.1" :git/sha "51bed20"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]
