@@ -11,7 +11,7 @@
         io.github.hive-agi/hive-mcp {:git/tag "v0.16.3" :git/sha "030e7be"}
 
         ;; Config DI — typed env var resolution with ADT backing
-        io.github.hive-agi/hive-di {:git/tag "v0.1.2" :git/sha "7916f3d"}
+        io.github.hive-agi/hive-di {:git/tag "v0.2.0" :git/sha "6ff3e60"}
 
         ;; Bounded parallelism — queue drain uses hive-weave.parallel/bounded-pmap
         io.github.hive-agi/hive-weave {:git/tag "v0.1.0" :git/sha "63dae4a"}}
@@ -21,15 +21,15 @@
          :extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}
                       cider/cider-nrepl {:mvn/version "0.58.0"}}}
   :local {:override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.1.0" :git/sha "06d41cc"}
-                          io.github.hive-agi/hive-di   {:git/tag "v0.1.2" :git/sha "7916f3d"}}}
+                          io.github.hive-agi/hive-di   {:git/tag "v0.2.0" :git/sha "6ff3e60"}}}
   :migrate {:extra-deps {org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
                          org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
-                         io.github.hive-agi/hive-dsl {:git/tag "v0.3.9" :git/sha "494af2c"}}
+                         io.github.hive-agi/hive-dsl {:git/tag "v0.4.0" :git/sha "c561cb7"}}
             :override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.1.0" :git/sha "06d41cc"}
-                            io.github.hive-agi/hive-di   {:git/tag "v0.1.2" :git/sha "7916f3d"}}}
+                            io.github.hive-agi/hive-di   {:git/tag "v0.2.0" :git/sha "6ff3e60"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
   :test {:extra-paths ["test"]
          :extra-deps {lambdaisland/kaocha         {:mvn/version "1.91.1392"}
                       org.clojure/test.check      {:mvn/version "1.1.1"}
-                      io.github.hive-agi/hive-test {:git/tag "v0.1.6" :git/sha "a53e9f8"}}
+                      io.github.hive-agi/hive-test {:git/tag "v0.2.0" :git/sha "841da83"}}
          :main-opts ["-m" "kaocha.runner"]}}}
