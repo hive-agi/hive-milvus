@@ -76,14 +76,16 @@
 
 (defn- entry->record
   "Convert a memory entry map to a Milvus insert record.
-   Generates embedding via the embedding service."
+   Generates embedding via the embedding service.
+   Writes an empty `:document` — the field is a Chroma-era duplicate of
+   `:content`. Reads never project it (see `default-read-fields`)."
   [entry collection-name]
   (let [raw-content (or (:content entry) "")
         content     (if (map? raw-content) (json/write-str raw-content) (str raw-content))
         embedding   (embed-svc/embed-for-collection collection-name content)]
     {:id              (or (:id entry) (proto/generate-id))
      :embedding       embedding
-     :document        content
+     :document        ""
      :type            (or (some-> (:type entry) name) "note")
      :tags            (tags->str (:tags entry))
      :content         content
@@ -127,6 +129,24 @@
                                 (when-not (str/blank? pid) pid))}
       (:distance row) (assoc :distance (:distance row)))))
 
+(def ^:private default-read-fields
+  ;; Projection for all bulk reads. Omits `embedding` (huge float vector)
+  ;; and `document` (byte-equal duplicate of `content`). See
+  ;; "Milvus projection pruning" + "document duplicates content" conventions.
+  ["id" "type" "tags" "content" "content_hash" "created" "updated"
+   "duration" "expires" "access_count" "helpful_count" "unhelpful_count"
+   "project_id"])
+
+(def metadata-read-fields
+  ;; Metadata-only projection: drops `content` (slow over HTTP). Per
+  ;; experiment 20260416235146-39f2795f, full projection 100 rows = 53.8s
+  ;; vs id-only 3.0s. Callers that only need id/type/tags/timestamps for
+  ;; filtering + ordering should pass :output-fields metadata-read-fields.
+  ;; Content gets re-hydrated via IMemoryStoreBatch get-entries for top-N.
+  ["id" "type" "tags" "content_hash" "created" "updated"
+   "duration" "expires" "access_count" "helpful_count" "unhelpful_count"
+   "project_id"])
+
 ;; =========================================================================
 ;; Filter Expression Builders
 ;; =========================================================================
@@ -142,9 +162,14 @@
                   (conj (str "project_id == \"" project-id "\""))
 
                   (and project-ids (seq project-ids))
-                  (conj (str "project_id in ["
-                             (str/join ", " (map #(str "\"" % "\"") project-ids))
-                             "]"))
+                  (conj (if (= 1 (count project-ids))
+                          ;; Equality uses the INVERTED index better than
+                          ;; `in [single-item]` on Milvus HTTP — observed
+                          ;; ~2x speedup on scope-filtered catchup scans.
+                          (str "project_id == \"" (first project-ids) "\"")
+                          (str "project_id in ["
+                               (str/join ", " (map #(str "\"" % "\"") project-ids))
+                               "]")))
 
                   (and tags (seq tags))
                   (into (map (fn [t] (str "tags like \"%" t "%\"")) tags))
@@ -174,6 +199,43 @@
   [collection-name]
   (swap! loaded-collections disj collection-name))
 
+(def ^:private scalar-indexed-fields
+  "Fields that back hot catchup filters. Without INVERTED scalar indexes on
+   these, Milvus cold-path queries fall back to full collection scans (~50s
+   per query on a few-thousand-row collection). Order matters for logging
+   only — each index is created independently and idempotently."
+  ["type" "project_id"])
+
+(defonce ^{:private true
+           :doc "Memoization guard so we only probe/install scalar indexes once per
+   process per collection. defonce so hot-reload doesn't reset the guard
+   while loaded-collections (also defonce) still holds the collection —
+   that desync caused ensure-scalar-indexes! to be skipped on reconnect."}
+  indexed-collections
+  (atom #{}))
+
+(defn- ensure-scalar-indexes!
+  "Idempotently create INVERTED scalar indexes on filter fields used by
+   catchup (type, project_id). Milvus `createIndex` on an already-indexed
+   field returns a non-OK code; we catch and keep going — the failure mode
+   for 'already exists' is indistinguishable from other errors via the
+   current milvus-clj surface, so we log at debug + carry on.
+
+   Metric-type is a required param on CreateIndexParam even for scalar
+   indexes; Milvus server ignores it when the index type is INVERTED."
+  [collection-name]
+  (when-not (contains? @indexed-collections collection-name)
+    (doseq [field scalar-indexed-fields]
+      (let [result (dsl-r/rescue ::index-failed
+                     @(milvus/create-index collection-name
+                                           {:field-name  field
+                                            :index-type  io.milvus.param.IndexType/INVERTED
+                                            :metric-type :l2}))]
+        (if (= result ::index-failed)
+          (log/debug "ensure-scalar-indexes! skipping" field "(likely already indexed)")
+          (log/info "Ensured INVERTED scalar index on" field "for" collection-name))))
+    (swap! indexed-collections conj collection-name)))
+
 (defn- ensure-collection!
   "Ensure the memory collection exists and is loaded into memory.
    After Milvus restart, collections exist but aren't loaded — queries
@@ -196,7 +258,8 @@
             (swap! loaded-collections conj collection-name)
             (catch Exception e
               (log/debug "load-collection (may already be loaded):" (.getMessage e))
-              (swap! loaded-collections conj collection-name)))))))
+              (swap! loaded-collections conj collection-name))))))
+  (ensure-scalar-indexes! collection-name))
 
 (defn- get-entry-by-id
   "Fetch a single entry by ID from Milvus. Returns entry map or nil.
@@ -624,15 +687,20 @@
   (query-entries [_this opts]
     (resilient config-atom
       (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-            {:keys [limit] :or {limit 100}} opts
+            _         (ensure-scalar-indexes! coll-name) ;; lazy belt: idempotent, no-ops when memoized
+            {:keys [limit output-fields]
+             :or {limit 100}} opts
+            fields (or output-fields default-read-fields)
             filter-expr (build-filter-expr opts)
             results (if filter-expr
                       @(milvus/query-scalar coll-name
                          {:filter filter-expr :limit limit
-                          :consistency-level :strong})
+                          :output-fields fields
+                          :consistency-level :bounded})
                       @(milvus/query-scalar coll-name
                          {:filter "id != \"\"" :limit limit
-                          :consistency-level :strong}))]
+                          :output-fields fields
+                          :consistency-level :bounded}))]
         (mapv record->entry results))))
 
   ;; --- Semantic Search ---
@@ -649,7 +717,8 @@
                             project-ids (assoc :project-ids project-ids)
                             exclude-tags (assoc :exclude-tags exclude-tags)))
             results     @(milvus/query coll-name
-                           (cond-> {:vector query-vec :limit limit}
+                           (cond-> {:vector query-vec :limit limit
+                                    :output-fields default-read-fields}
                              filter-expr (assoc :filter filter-expr)))]
         (mapv record->entry results))))
 
@@ -685,6 +754,7 @@
                          (conj (str "project_id == \"" (:project-id opts) "\"")))
             results    @(milvus/query-scalar coll-name
                           {:filter (str/join " and " filter-cls)
+                           :output-fields default-read-fields
                            :limit 1000})]
         (mapv record->entry results))))
 
@@ -699,6 +769,7 @@
                          (conj (str "project_id == \"" (:project-id opts) "\"")))
             results    @(milvus/query-scalar coll-name
                           {:filter (str/join " and " filter-cls)
+                           :output-fields default-read-fields
                            :limit 1})]
         (when (seq results)
           (record->entry (first results))))))
@@ -775,6 +846,7 @@
                                             :include-expired? true})
             results @(milvus/query-scalar coll-name
                        {:filter (or filter-expr "id != \"\"")
+                        :output-fields default-read-fields
                         :limit 10000})]
         (->> (mapv record->entry results)
              (filter #(> (staleness-probability %) threshold))
@@ -796,7 +868,22 @@
                           cnt)
                         cnt))
                     0
-                    kg-outgoing)))))))
+                    kg-outgoing))))))
+
+  ;; =========================================================================
+  ;; IMemoryStoreBatch — single-RPC multi-ID fetch (catchup hot path)
+  ;; =========================================================================
+  proto/IMemoryStoreBatch
+
+  (get-entries [_this ids]
+    (let [ids (vec (distinct (remove nil? ids)))]
+      (when (seq ids)
+        (resilient config-atom
+          (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
+                results   @(milvus/get coll-name ids
+                             :consistency-level :bounded
+                             :include default-read-fields)]
+            (mapv record->entry results)))))))
 
 (defn create-store
   "Create a new Milvus-backed memory store.
