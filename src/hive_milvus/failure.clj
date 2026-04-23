@@ -13,6 +13,16 @@
    essential for PR-3's hybrid-transport story where the same store.clj
    resilience machinery serves both.
 
+   The classifier walks the `.getCause` chain, not just the top
+   throwable. This matters because `milvus-clj.api/*` returns
+   `future`s that hive-milvus derefs inside the resilient body; a
+   transport-thrown `ex-info` carrying the `::client/transport` tag
+   re-surfaces wrapped in `java.util.concurrent.ExecutionException`,
+   whose own ex-data is empty. Classifying only the top wrapper would
+   drop every such transient into `:milvus/fatal` and starve the heal
+   loop — the exact failure mode that motivated
+   `hive-mcp.vectordb.resilience/transient-failure?`.
+
    No side effects. No milvus/* singleton calls. Just shapes."
   (:require [clojure.string :as str]
             [hive-dsl.adt :as adt]
@@ -34,14 +44,19 @@
 
 (def ^:private transient-markers
   "Fallback markers for non-tagged exceptions (legacy gRPC paths that
-   don't go through the new `client/classify-error` dispatch). The
-   primary path uses the ::client/transport ex-data tag, which is set
-   by both `transport.grpc` and `transport.http`."
+   don't go through the new `client/classify-error` dispatch, and
+   ExecutionException wrappers whose ex-data is lost on the wrap).
+   The primary path uses the ::client/transport ex-data tag, which is
+   set by both `transport.grpc` and `transport.http`."
   ["not connected"
    "UNAVAILABLE"
    "DEADLINE_EXCEEDED"
    "Keepalive failed"
-   "connection is likely gone"])
+   "connection is likely gone"
+   "selector manager closed"
+   "IO failure"
+   "Connection reset"
+   "Broken pipe"])
 
 (defn- transient-message?
   "True if `msg` contains any marker for a transient gRPC / connection drop."
@@ -51,37 +66,65 @@
       (let [s (str msg)]
         (some #(str/includes? s %) transient-markers)))))
 
+(def ^:private ^:const max-cause-depth
+  "Hard cap on `.getCause` chain traversal. Real JVM chains rarely
+   exceed 5 links (ExecutionException -> RuntimeException ->
+   StatusRuntimeException is the common worst case); 10 is generous
+   headroom without letting a pathological chain stall the classifier."
+  10)
+
+(defn- causal-chain
+  "Seq of `t` and every `.getCause` link, stopping on nil, a self-cycle,
+   or `max-cause-depth` links — whichever comes first. Depth cap is a
+   belt-and-braces guard for pathological wrappers beyond the
+   identity-cycle check."
+  [^Throwable t]
+  (loop [t t acc []]
+    (if (or (nil? t)
+            (>= (count acc) max-cause-depth)
+            (some #(identical? t %) acc))
+      acc
+      (recur (.getCause t) (conj acc t)))))
+
+(defn- link-transient?
+  "True if a single throwable link classifies as transient via the
+   transport-tagged `client/classify-error` dispatch OR via the
+   legacy message-marker fallback. Per-link so `classify` can walk
+   the cause chain and match on the tagged inner throwable even when
+   an outer wrapper (ExecutionException, RuntimeException, ...) has
+   dropped the ex-data."
+  [^Throwable link]
+  (let [category (try (client/classify-error link)
+                      (catch Throwable _ nil))]
+    (or (= :connection-failure category)
+        (= :retryable category)
+        (transient-message? (some-> link .getMessage)))))
+
 (defn classify
   "Classify a Throwable into a MilvusFailure ADT value.
 
-   Primary path: delegate to `milvus-clj.client/classify-error`, which
-   dispatches on the transport-tagged ex-data and returns
-   `:connection-failure | :retryable | :fatal`. Both `:connection-failure`
-   and `:retryable` map to `:milvus/transient` (the resilient retry path
-   handles both the same way); `:fatal` maps to `:milvus/fatal`.
+   Walks the `.getCause` chain and returns `:milvus/transient` when
+   ANY link classifies as transient — either through the
+   `::client/transport`-tagged `milvus-clj.client/classify-error`
+   dispatch (`:connection-failure` / `:retryable`) or through the
+   legacy message-marker fallback. Otherwise `:milvus/fatal`.
 
-   Fallback path (for legacy untagged exceptions): match the throwable's
-   message against `transient-markers`. Preserved so that pre-PR-3 code
-   paths still classify correctly during the migration.
+   Walking the chain matters because `milvus-clj.api/*` returns
+   `future`s; when hive-milvus derefs them, a transport-thrown
+   `ex-info` tagged `{::client/transport :http :cause :io}` resurfaces
+   wrapped in `java.util.concurrent.ExecutionException`, whose own
+   ex-data is empty. Only by inspecting the cause do we see the tag
+   and route the failure to the heal loop instead of re-throwing.
 
-   Returns a `MilvusFailure` ADT value, never throws."
+   The resulting ADT value's `:message` preserves the top throwable's
+   message for legacy-shape continuity. Returns a `MilvusFailure`,
+   never throws."
   [^Throwable t]
-  (let [msg (or (some-> t .getMessage) "")
-        category (try (client/classify-error t)
-                      (catch Throwable _ nil))]
-    (cond
-      (= :fatal category)
-      (milvus-failure :milvus/fatal {:message msg})
-
-      (or (= :connection-failure category) (= :retryable category))
+  (let [msg   (or (some-> t .getMessage) "")
+        chain (causal-chain t)]
+    (if (some link-transient? chain)
       (milvus-failure :milvus/transient {:message msg})
-
-      ;; Fallback: legacy marker matching for untagged exceptions.
-      (transient-message? msg)
-      (milvus-failure :milvus/transient {:message msg})
-
-      :else
-      (milvus-failure :milvus/fatal {:message msg}))))
+      (milvus-failure :milvus/fatal     {:message msg}))))
 
 (defn transient?
   "True if failure is a :milvus/transient variant."

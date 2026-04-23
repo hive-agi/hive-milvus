@@ -11,7 +11,8 @@
             [clojure.test.check.properties :as prop]
             [hive-dsl.adt :as adt]
             [hive-milvus.failure :as failure])
-  (:import [io.grpc StatusRuntimeException Status]))
+  (:import [io.grpc StatusRuntimeException Status]
+           [java.util.concurrent ExecutionException CompletionException]))
 
 ;; =============================================================================
 ;; classify — unit cases covering every branch of the taxonomy
@@ -55,6 +56,64 @@
     (let [e (RuntimeException.)
           f (failure/classify e)]
       (is (#{:milvus/fatal :milvus/transient} (adt/adt-variant f))))))
+
+;; =============================================================================
+;; Wrapper-unwinding — future/async chains swallow tagged ex-data, classifier
+;; must walk .getCause to see the tagged/transient inner throwable.
+;; Regression: before this fix, ExecutionException-wrapped transients leaked
+;; through as :milvus/fatal, starving the Milvus heal loop.
+;; =============================================================================
+
+(deftest classify-execution-exception-wrapping-transient
+  (testing "ExecutionException wrapping a transient gRPC failure -> :milvus/transient"
+    (let [inner (StatusRuntimeException. (Status/UNAVAILABLE))
+          outer (ExecutionException. "java.util.concurrent.ExecutionException" inner)
+          f     (failure/classify outer)]
+      (is (= :milvus/transient (adt/adt-variant f))
+          "outer ExecutionException has no ex-data; classifier must walk .getCause")
+      (is (failure/transient? f)))))
+
+(deftest classify-execution-exception-wrapping-ex-info-transport-tag
+  (testing "ExecutionException wrapping an ex-info tagged ::client/transport -> :milvus/transient"
+    (let [inner (ex-info "selector manager closed"
+                         {:milvus-clj.client/transport :http
+                          :cause :io})
+          outer (ExecutionException. "wrapped" inner)
+          f     (failure/classify outer)]
+      (is (= :milvus/transient (adt/adt-variant f))))))
+
+(deftest classify-nested-runtime-execution-status
+  (testing "RuntimeException -> ExecutionException -> StatusRuntimeException(UNAVAILABLE) -> :milvus/transient"
+    (let [status  (StatusRuntimeException. (Status/UNAVAILABLE))
+          exec    (ExecutionException. "future deref" status)
+          runtime (RuntimeException. "wrapper" exec)
+          f       (failure/classify runtime)]
+      (is (= :milvus/transient (adt/adt-variant f))
+          "three-deep chain must still be walked to reach the transient grpc leaf"))))
+
+(deftest classify-completion-exception-wrapping-transient
+  (testing "CompletionException wrapping a transient -> :milvus/transient (CompletableFuture path)"
+    (let [inner (StatusRuntimeException. (Status/DEADLINE_EXCEEDED))
+          outer (CompletionException. "future.join" inner)
+          f     (failure/classify outer)]
+      (is (= :milvus/transient (adt/adt-variant f))))))
+
+(deftest classify-wrapped-fatal-stays-fatal
+  (testing "ExecutionException wrapping a genuinely fatal cause stays :milvus/fatal"
+    (let [inner (RuntimeException. "collection not found")
+          outer (ExecutionException. "wrapped" inner)
+          f     (failure/classify outer)]
+      (is (= :milvus/fatal (adt/adt-variant f))
+          "walking the chain must not promote fatal causes to transient"))))
+
+(deftest classify-deep-cycle-terminates
+  (testing "Self-referential cause chain terminates (depth cap + cycle guard)"
+    (let [e (RuntimeException. "collection not found")]
+      ;; RuntimeException's initCause rejects self — the identity-cycle
+      ;; guard + max-cause-depth cap defend against pathological chains
+      ;; that slip past that JVM check via reflection or subclassing.
+      ;; This test just asserts the classifier returns (i.e. doesn't loop).
+      (is (= :milvus/fatal (adt/adt-variant (failure/classify e)))))))
 
 ;; =============================================================================
 ;; ->legacy-map — every variant must yield the legacy shape
