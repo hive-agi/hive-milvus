@@ -4,6 +4,12 @@
    Registers MilvusMemoryStore as the active IMemoryStore when initialized.
    Provides :vector-search capability to the addon registry.
 
+   Config resolution is delegated to hive-milvus.config/resolve-MilvusConfig
+   (a hive-di defconfig). The manifest-supplied config map is passed as
+   overrides; missing keys fall back to MILVUS_* env vars then to typed
+   defaults. All errors are collected (no short-circuit) and surfaced via
+   the :errors vector in the IAddon initialize! result.
+
    Usage (from hive-mcp addon discovery or manual):
      (require '[hive-milvus.addon :as milvus-addon])
      (require '[hive-mcp.addons.core :as addons])
@@ -13,7 +19,9 @@
        {:host \"milvus.milvus.svc\" :port 19530})"
   (:require [hive-mcp.addons.protocol :as addon-proto]
             [hive-mcp.protocols.memory :as mem-proto]
+            [hive-milvus.config :as config]
             [hive-milvus.store :as store]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 
 (defrecord MilvusAddon [store-atom]
@@ -26,41 +34,37 @@
   (capabilities [_this]
     #{:vector-search :health-reporting})
 
-  (initialize! [_this config]
+  (initialize! [_this addon-config]
     (try
-      (let [;; Apply defaults for env vars that resolved to empty string.
-            ;; :transport defaults to :grpc when unset/empty; accepts a
-            ;; keyword or a string ("grpc"/"http") from the manifest's
-            ;; ${MILVUS_TRANSPORT} env-var resolution.
-            coerce-transport (fn [v]
-                               (cond
-                                 (keyword? v) v
-                                 (and (string? v) (seq v)) (keyword v)
-                                 :else :grpc))
-            resolved (-> config
-                         (update :host #(if (seq %) % "localhost"))
-                         (update :port #(if (and % (not= % ""))
-                                          (if (string? %) (parse-long %) %)
-                                          19530))
-                         (update :collection-name #(if (seq %) % "hive_mcp_memory"))
-                         (update :transport coerce-transport))
-            store (store/create-store
-                    (select-keys resolved [:host :port :collection-name
-                                           :token :database :secure
-                                           :transport]))
-            result (mem-proto/connect! store resolved)]
-        (if (:success? result)
-          (do
-            (reset! store-atom store)
-            (mem-proto/set-store! store)
-            (log/info "MilvusAddon initialized — set as active memory store"
-                      {:host      (:host resolved)
-                       :port      (:port resolved)
-                       :transport (:transport resolved)})
-            {:success? true :errors [] :metadata {:backend "milvus"}})
-          {:success? false
-           :errors (:errors result)
-           :metadata {:backend "milvus"}}))
+      (let [resolution (config/resolve-MilvusConfig (or addon-config {}))]
+        (if (r/err? resolution)
+          ;; Config resolution failed — surface every collected error so
+          ;; operators see the full picture in one pass.
+          (let [errs (mapv (fn [{:keys [field message] :as e}]
+                             (or message (pr-str (assoc e :field field))))
+                           (:errors resolution))]
+            (log/error "MilvusAddon config resolution failed" {:errors errs})
+            {:success? false
+             :errors (or (seq errs) [(pr-str resolution)])
+             :metadata {:backend "milvus"}})
+          (let [resolved      (:ok resolution)
+                store-config  (select-keys resolved [:host :port :collection-name
+                                                     :token :database :secure
+                                                     :transport])
+                store         (store/create-store store-config)
+                connect-res   (mem-proto/connect! store resolved)]
+            (if (:success? connect-res)
+              (do
+                (reset! store-atom store)
+                (mem-proto/set-store! store)
+                (log/info "MilvusAddon initialized — set as active memory store"
+                          {:host      (:host resolved)
+                           :port      (:port resolved)
+                           :transport (:transport resolved)})
+                {:success? true :errors [] :metadata {:backend "milvus"}})
+              {:success? false
+               :errors (:errors connect-res)
+               :metadata {:backend "milvus"}}))))
       (catch Exception e
         {:success? false
          :errors [(.getMessage e)]
