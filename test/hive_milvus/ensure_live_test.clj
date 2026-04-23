@@ -6,16 +6,18 @@
    no live Milvus required. They use with-redefs to stub milvus/connected?,
    milvus/disconnect!, and start-reconnect-loop!."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [hive-milvus.store :as store]
+            [hive-milvus.store.health :as health]
             [milvus-clj.api :as milvus]))
 
-;; Grab private vars by name — tests live in a sibling ns.
-(def health-cache            @#'store/health-cache)
-(def health-cache-ttl-ms     @#'store/health-cache-ttl-ms)
-(def ensure-live!            @#'store/ensure-live!)
-(def kick-reconnect-now!     @#'store/kick-reconnect-now!)
-(def invalidate-health-cache! @#'store/invalidate-health-cache!)
-(def reconnect-state         @#'store/reconnect-state)
+;; Grab vars by name — tests live in a sibling ns.
+;; These were moved to hive-milvus.store.health during the store.clj split;
+;; they remain re-exported from hive-milvus.store for downstream callers.
+(def health-cache            @#'health/health-cache)
+(def health-cache-ttl-ms     @#'health/health-cache-ttl-ms)
+(def ensure-live!            @#'health/ensure-live!)
+(def kick-reconnect-now!     @#'health/kick-reconnect-now!)
+(def invalidate-health-cache! @#'health/invalidate-health-cache!)
+(def reconnect-state         @#'health/reconnect-state)
 
 (defn- reset-state! [f]
   (reset! health-cache {:ts 0 :alive? false})
@@ -49,7 +51,7 @@
           loop-calls (atom 0)]
       (with-redefs [milvus/connected?          (fn [] false)
                     milvus/disconnect!         (fn [] (swap! disconnect-calls inc))
-                    store/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
+                    health/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
         (is (false? (ensure-live! (atom {}))))
         (is (= 1 @disconnect-calls) "dead client must be dropped")
         (is (= 1 @loop-calls)       "reconnect loop must be started")
@@ -61,7 +63,7 @@
       (swap! reconnect-state assoc :running? true)
       (with-redefs [milvus/connected?          (fn [] false)
                     milvus/disconnect!         (fn [] nil)
-                    store/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
+                    health/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
         (ensure-live! (atom {}))
         (is (zero? @loop-calls) "must not start a second reconnect loop")))))
 
@@ -92,6 +94,6 @@
     (let [loop-calls (atom 0)]
       (with-redefs [milvus/connected?          (fn [] (throw (RuntimeException. "boom")))
                     milvus/disconnect!         (fn [] nil)
-                    store/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
+                    health/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
         (is (false? (ensure-live! (atom {}))))
         (is (= 1 @loop-calls))))))
