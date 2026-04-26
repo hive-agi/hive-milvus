@@ -4,7 +4,7 @@
         com.taoensso/timbre       {:mvn/version "6.8.0"}
 
         ;; Milvus Java SDK client wrapper
-        io.github.hive-agi/milvus-clj {:git/tag "v0.1.0" :git/sha "06d41cc64f4c6e6b046e86a9fb247c787ff4f548"}
+        io.github.hive-agi/milvus-clj {:git/tag "v0.2.0" :git/sha "33dcd3fe0ed7b8ee9e8b13f0ebeee174ea9cc0f3"}
 
         ;; hive-mcp protocols (IMemoryStore, IAddon)
         ;; Only the protocol interfaces — no concrete implementations
@@ -20,12 +20,12 @@
  {:dev  {:extra-paths ["dev" "test"]
          :extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}
                       cider/cider-nrepl {:mvn/version "0.58.0"}}}
-  :local {:override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.1.0" :git/sha "06d41cc"}
+  :local {:override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.2.0" :git/sha "33dcd3f"}
                           io.github.hive-agi/hive-di   {:git/tag "v0.2.0" :git/sha "6ff3e60"}}}
   :migrate {:extra-deps {org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
                          org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
                          io.github.hive-agi/hive-dsl {:git/tag "v0.4.0" :git/sha "c561cb7"}}
-            :override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.1.0" :git/sha "06d41cc"}
+            :override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.2.0" :git/sha "33dcd3f"}
                             io.github.hive-agi/hive-di   {:git/tag "v0.2.0" :git/sha "6ff3e60"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
   :test {:extra-paths ["test"]
