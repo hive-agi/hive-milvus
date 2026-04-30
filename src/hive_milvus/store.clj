@@ -19,14 +19,14 @@
    The `defrecord MilvusMemoryStore` + `create-store` live here because
    the protocol methods can't be split across files."
   (:require [hive-mcp.protocols.memory :as proto]
-            [hive-mcp.embeddings.service :as embed-svc]
             [hive-milvus.store.schema :as schema]
-            [hive-milvus.store.index :as index]
-            [hive-milvus.store.query :as query]
             [hive-milvus.store.health :as health :refer [resilient]]
-            [milvus-clj.api :as milvus]
-            [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-milvus.store.lifecycle :as lifecycle]
+            [hive-milvus.store.entries :as entries]
+            [hive-milvus.store.analytics :as analytics]
+            [hive-milvus.store.staleness :as staleness]
+            [hive-milvus.store.batch :as batch]))
 
 ;; =========================================================================
 ;; Re-exports — preserve hive-milvus.store/* API for the existing test
@@ -45,329 +45,93 @@
 (def with-auto-reconnect    health/with-auto-reconnect)
 
 ;; =========================================================================
+;; Ordering — Milvus query-scalar lacks server-side ORDER BY. We sort
+;; post-fetch on the rows the server returned, so callers MUST pass a
+;; :limit large enough to cover the desired top-N (otherwise the sort
+;; is over an arbitrary scan-order subset).
+;; =========================================================================
+
+;; =========================================================================
 ;; Protocol Implementation
 ;; =========================================================================
 
 (defrecord MilvusMemoryStore [config-atom]
-  ;; =========================================================================
-  ;; IMemoryStore - Core Protocol
-  ;; =========================================================================
   proto/IMemoryStore
 
-  ;; --- Connection Lifecycle ---
-
   (connect! [_this config]
-    ;; Keepalive defaults tuned for fragile intermediaries (Tailscale
-    ;; userspace netstack, cloud NAT): ping every 10s < gVisor idle-flow
-    ;; GC window, without-calls? forces pings on idle clients. Foreground
-    ;; retries are bounded — after the budget the background heal loop
-    ;; takes over and `with-auto-reconnect` transparently sees recovery.
-    (let [milvus-config (into {} (filter (comp some? val))
-                              (select-keys config [:transport
-                                                   :host :port :token :database :secure
-                                                   :connect-timeout-ms
-                                                   :keep-alive-time-ms
-                                                   :keep-alive-timeout-ms
-                                                   :keep-alive-without-calls?
-                                                   :idle-timeout-ms]))
-          milvus-config (merge {:connect-timeout-ms        30000
-                                :keep-alive-time-ms        10000
-                                :keep-alive-timeout-ms     20000
-                                :keep-alive-without-calls? true}
-                               milvus-config)
-          coll-name     (or (:collection-name config) "hive_mcp_memory")
-          max-retries   6
-          base-ms       1000
-          max-ms        15000]
-      (swap! config-atom merge config)
-      (loop [attempt 1]
-        (let [result
-              (try
-                (milvus/connect! milvus-config)
-                (let [dimension (embed-svc/get-dimension-for coll-name)]
-                  (index/ensure-collection! coll-name dimension))
-                {:success? true
-                 :backend  "milvus"
-                 :errors   []
-                 :metadata (select-keys @config-atom [:host :port :collection-name])}
-                (catch Exception e
-                  {:success? false
-                   :backend  "milvus"
-                   :errors   [(.getMessage e)]
-                   :metadata {}}))]
-          (cond
-            (:success? result)
-            result
-
-            (>= attempt max-retries)
-            (do
-              (log/warn "Milvus connect failed after" max-retries
-                        "foreground attempts; handing off to background healing loop")
-              (when-not (:running? @health/reconnect-state)
-                (health/start-reconnect-loop! config-atom))
-              (assoc result :reconnecting? true))
-
-            :else
-            (let [wait (health/backoff-ms attempt base-ms max-ms)]
-              (log/info "Milvus connect attempt" attempt "failed, retrying in" (/ wait 1000.0) "s")
-              (Thread/sleep wait)
-              (recur (inc attempt))))))))
+    (lifecycle/connect! config-atom config))
 
   (disconnect! [_this]
-    (try
-      (milvus/disconnect!)
-      (reset! index/loaded-collections #{})
-      {:success? true :errors []}
-      (catch Exception e
-        {:success? false :errors [(.getMessage e)]})))
+    (lifecycle/disconnect!))
 
   (connected? [_this]
-    (milvus/connected?))
+    (lifecycle/connected?))
 
   (health-check [_this]
-    (let [start-ms (System/currentTimeMillis)
-          ts       (schema/now-iso)]
-      (try
-        (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-              exists?   @(milvus/has-collection coll-name)
-              latency   (- (System/currentTimeMillis) start-ms)]
-          {:healthy?    exists?
-           :latency-ms  latency
-           :backend     "milvus"
-           :entry-count nil
-           :errors      (if exists? [] ["Collection does not exist"])
-           :checked-at  ts})
-        (catch Exception e
-          {:healthy?    false
-           :latency-ms  (- (System/currentTimeMillis) start-ms)
-           :backend     "milvus"
-           :entry-count nil
-           :errors      [(.getMessage e)]
-           :checked-at  ts}))))
-
-  ;; --- CRUD Operations ---
+    (lifecycle/health-check config-atom))
 
   (add-entry! [_this entry]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-            record    (schema/entry->record entry coll-name)]
-        @(milvus/add coll-name [record] :upsert? true)
-        (:id record))))
+    (entries/add-entry! config-atom entry))
 
   (get-entry [_this id]
-    (resilient config-atom
-      (query/get-entry-by-id (:collection-name @config-atom "hive_mcp_memory") id)))
+    (entries/get-entry config-atom id))
 
   (update-entry! [_this id updates]
-    (resilient config-atom
-      (query/update-entry-fields! (:collection-name @config-atom "hive_mcp_memory")
-                                  id updates)))
+    (entries/update-entry! config-atom id updates))
 
   (delete-entry! [_this id]
-    (resilient config-atom
-      @(milvus/delete (:collection-name @config-atom "hive_mcp_memory") [id])
-      true))
+    (entries/delete-entry! config-atom id))
 
   (query-entries [_this opts]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-            _         (index/ensure-scalar-indexes! coll-name) ;; lazy belt: idempotent, no-ops when memoized
-            {:keys [limit output-fields]
-             :or {limit 100}} opts
-            fields (or output-fields schema/default-read-fields)
-            filter-expr (schema/build-filter-expr opts)
-            results (if filter-expr
-                      @(milvus/query-scalar coll-name
-                         {:filter filter-expr :limit limit
-                          :output-fields fields
-                          :consistency-level :bounded})
-                      @(milvus/query-scalar coll-name
-                         {:filter "id != \"\"" :limit limit
-                          :output-fields fields
-                          :consistency-level :bounded}))]
-        (mapv schema/record->entry results))))
-
-  ;; --- Semantic Search ---
+    (entries/query-entries config-atom opts))
 
   (search-similar [_this query-text opts]
-    (resilient config-atom
-      (let [coll-name   (:collection-name @config-atom "hive_mcp_memory")
-            {:keys [limit type project-ids exclude-tags]
-             :or   {limit 10}} opts
-            query-vec   (embed-svc/embed-for-collection coll-name query-text)
-            filter-expr (schema/build-filter-expr
-                          (cond-> {:include-expired? false}
-                            type        (assoc :type type)
-                            project-ids (assoc :project-ids project-ids)
-                            exclude-tags (assoc :exclude-tags exclude-tags)))
-            results     @(milvus/query coll-name
-                           (cond-> {:vector query-vec :limit limit
-                                    :output-fields schema/default-read-fields}
-                             filter-expr (assoc :filter filter-expr)))]
-        (mapv schema/record->entry results))))
+    (entries/search-similar config-atom query-text opts))
 
   (supports-semantic-search? [_this]
-    (embed-svc/provider-available-for?
-      (:collection-name @config-atom "hive_mcp_memory")))
-
-  ;; --- Expiration Management ---
+    (entries/supports-semantic-search? config-atom))
 
   (cleanup-expired! [_this]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-            now       (schema/now-iso)
-            expired   @(milvus/query-scalar coll-name
-                         {:filter (str "expires != \"\" and expires < \"" now "\"")
-                          :output-fields ["id"]
-                          :limit 10000})]
-        (when (seq expired)
-          (let [ids (mapv :id expired)]
-            @(milvus/delete coll-name ids)
-            (log/info "Cleaned up" (count ids) "expired entries from Milvus")))
-        (count expired))))
+    (entries/cleanup-expired! config-atom))
 
   (entries-expiring-soon [_this days opts]
-    (resilient config-atom
-      (let [coll-name  (:collection-name @config-atom "hive_mcp_memory")
-            now        (java.time.ZonedDateTime/now (java.time.ZoneId/systemDefault))
-            horizon    (str (.plusDays now days))
-            now-str    (str now)
-            filter-cls (cond-> [(str "expires != \"\" and expires > \"" now-str
-                                 "\" and expires < \"" horizon "\"")]
-                         (:project-id opts)
-                         (conj (str "project_id == \"" (:project-id opts) "\"")))
-            results    @(milvus/query-scalar coll-name
-                          {:filter (str/join " and " filter-cls)
-                           :output-fields schema/default-read-fields
-                           :limit 1000})]
-        (mapv schema/record->entry results))))
-
-  ;; --- Duplicate Detection ---
+    (entries/entries-expiring-soon config-atom days opts))
 
   (find-duplicate [_this type content-hash opts]
-    (resilient config-atom
-      (let [coll-name  (:collection-name @config-atom "hive_mcp_memory")
-            filter-cls (cond-> [(str "type == \"" (name type) "\"")
-                                (str "content_hash == \"" content-hash "\"")]
-                         (:project-id opts)
-                         (conj (str "project_id == \"" (:project-id opts) "\"")))
-            results    @(milvus/query-scalar coll-name
-                          {:filter (str/join " and " filter-cls)
-                           :output-fields schema/default-read-fields
-                           :limit 1})]
-        (when (seq results)
-          (schema/record->entry (first results))))))
-
-  ;; --- Store Management ---
+    (entries/find-duplicate config-atom type content-hash opts))
 
   (store-status [_this]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
-        {:backend          "milvus"
-         :configured?      (milvus/connected?)
-         :entry-count      (try
-                             (count @(milvus/query-scalar coll-name
-                                       {:filter "id != \"\""
-                                        :output-fields ["id"]
-                                        :limit 100000}))
-                             (catch Exception _ nil))
-         :supports-search? (milvus/connected?)})))
+    (entries/store-status config-atom))
 
   (reset-store! [_this]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
-        (when @(milvus/has-collection coll-name)
-          @(milvus/drop-collection coll-name))
-        (index/invalidate-loaded-collection! coll-name)
-        true)))
+    (entries/reset-store! config-atom))
 
-  ;; =========================================================================
-  ;; IMemoryStoreWithAnalytics
-  ;; =========================================================================
   proto/IMemoryStoreWithAnalytics
 
   (log-access! [_this id]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
-        (when-let [entry (query/get-entry-by-id coll-name id)]
-          (query/update-entry-fields! coll-name id
-            {:access-count (inc (or (:access-count entry) 0))})))))
+    (analytics/log-access! config-atom id))
 
   (record-feedback! [_this id feedback]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
-        (when-let [entry (query/get-entry-by-id coll-name id)]
-          (let [field     (schema/feedback->field feedback)
-                new-count (inc (or (get entry field) 0))]
-            (query/update-entry-fields! coll-name id {field new-count}))))))
+    (analytics/record-feedback! config-atom id feedback))
 
   (get-helpfulness-ratio [_this id]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
-        (when-let [entry (query/get-entry-by-id coll-name id)]
-          (schema/helpfulness-map entry)))))
+    (analytics/get-helpfulness-ratio config-atom id))
 
-  ;; =========================================================================
-  ;; IMemoryStoreWithStaleness
-  ;; =========================================================================
   proto/IMemoryStoreWithStaleness
 
   (update-staleness! [_this id staleness-opts]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-            {:keys [beta source depth]} staleness-opts]
-        (query/update-entry-fields! coll-name id
-          (cond-> {}
-            beta   (assoc :staleness-beta beta)
-            source (assoc :staleness-source (name source))
-            depth  (assoc :staleness-depth depth))))))
+    (staleness/update-staleness! config-atom id staleness-opts))
 
   (get-stale-entries [_this threshold opts]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-            {:keys [project-id type]} opts
-            filter-expr (schema/build-filter-expr {:project-id project-id :type type
-                                                   :include-expired? true})
-            results @(milvus/query-scalar coll-name
-                       {:filter (or filter-expr "id != \"\"")
-                        :output-fields schema/default-read-fields
-                        :limit 10000})]
-        (->> (mapv schema/record->entry results)
-             (filter #(> (schema/staleness-probability %) threshold))
-             vec))))
+    (staleness/get-stale-entries config-atom threshold opts))
 
   (propagate-staleness! [_this source-id depth]
-    (resilient config-atom
-      (let [coll-name (:collection-name @config-atom "hive_mcp_memory")]
-        (when-let [entry (query/get-entry-by-id coll-name source-id)]
-          (let [kg-outgoing (:kg-outgoing entry)]
-            (reduce (fn [cnt dep-id]
-                      (if (and dep-id (seq dep-id))
-                        (if-let [dep (query/get-entry-by-id coll-name dep-id)]
-                          (do (query/update-entry-fields! coll-name dep-id
-                                {:staleness-beta (inc (or (:staleness-beta dep) 1))
-                                 :staleness-source "transitive"
-                                 :staleness-depth (inc depth)})
-                              (inc cnt))
-                          cnt)
-                        cnt))
-                    0
-                    kg-outgoing))))))
+    (staleness/propagate-staleness! config-atom source-id depth))
 
-  ;; =========================================================================
-  ;; IMemoryStoreBatch — single-RPC multi-ID fetch (catchup hot path)
-  ;; =========================================================================
   proto/IMemoryStoreBatch
 
   (get-entries [_this ids]
-    (let [ids (vec (distinct (remove nil? ids)))]
-      (when (seq ids)
-        (resilient config-atom
-          (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-                results   @(milvus/get coll-name ids
-                             :consistency-level :bounded
-                             :include schema/default-read-fields)]
-            (mapv schema/record->entry results)))))))
+    (batch/get-entries config-atom ids)))
 
 (defn create-store
   "Create a new Milvus-backed memory store.

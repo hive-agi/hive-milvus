@@ -3,20 +3,22 @@
  :addon/version      "0.1.0"
  :addon/init-ns      "hive-milvus.addon"
  :addon/init-fn      "create-addon"
- :addon/config       {:host "${MILVUS_HOST}"
-                      :port "${MILVUS_PORT}"
-                      :collection-name "hive_mcp_memory"
-                      ;; :transport — :grpc (default) or :http.
-                      ;; HTTP transport eliminates the gVisor idle-flow
-                      ;; pruning class entirely (REST is stateless), at
-                      ;; the cost of REST-vs-gRPC overhead per call.
-                      ;; Empty / unset → :grpc.
-                      ;;
-                      ;; Port note: Milvus 2.5+ serves BOTH gRPC and REST
-                      ;; on port 19530 via the proxy. Port 9091 is the
-                      ;; metrics/health endpoint, NOT the REST API. Keep
-                      ;; MILVUS_PORT=19530 even when transport is :http.
-                      :transport "${MILVUS_TRANSPORT}"}
+ ;; Connection surface (host, port, transport, token, database, secure,
+ ;; collection-name) is resolved by hive-milvus.config/MilvusConfig
+ ;; (a hive-di defconfig). The MILVUS_* env vars are pulled directly there,
+ ;; with typed coercion, blank->nil, and Result-collected errors.
+ ;;
+ ;; This map carries only literal overrides — values that should win over
+ ;; env defaults. Leave it empty to fully delegate to the addon's defconfig.
+ ;;
+ ;; Notes preserved from the previous templated manifest:
+ ;;  - :transport — :grpc (default) or :http. HTTP eliminates the gVisor
+ ;;    idle-flow pruning class entirely (REST is stateless), at the cost
+ ;;    of REST-vs-gRPC overhead per call. Empty / unset → :grpc.
+ ;;  - Port — Milvus 2.5+ serves BOTH gRPC and REST on 19530 via the proxy.
+ ;;    9091 is the metrics/health endpoint, NOT the REST API. Keep
+ ;;    MILVUS_PORT=19530 even when transport is :http.
+ :addon/config       {}
  :addon/capabilities #{:vector-search :health-reporting}
  :addon/dependencies #{}
  :addon/description  "Milvus vector database backend for IMemoryStore"}
