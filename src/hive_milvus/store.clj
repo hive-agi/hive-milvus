@@ -131,7 +131,20 @@
   proto/IMemoryStoreBatch
 
   (get-entries [_this ids]
-    (batch/get-entries config-atom ids)))
+    (batch/get-entries config-atom ids))
+
+  proto/IMemoryStoreWithRouting
+
+  (target-collection-for [_this entry]
+    (entries/target-collection-for config-atom entry))
+
+  (relocate-entry! [_this id]
+    (entries/relocate-entry! config-atom id)))
+
+(extend-protocol proto/IMemoryStoreMetadataWrite
+  MilvusMemoryStore
+  (update-metadata! [this id updates]
+    (entries/update-fields-keep-embedding! (:config-atom this) id updates)))
 
 (defn create-store
   "Create a new Milvus-backed memory store.

@@ -8,7 +8,8 @@
             [hive-mcp.embeddings.service :as embed-svc]
             [hive-mcp.dns.result :as r]
             [clojure.data.json :as json]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [hive-milvus.embedder :as embedder]))
 
 ;; =========================================================================
 ;; Pure Calculations
@@ -62,17 +63,21 @@
     (try (json/read-str s :key-fn keyword)
          (catch Exception _ []))))
 
-(defn entry->record
-  "Convert a memory entry map to a Milvus insert record.
-   Generates embedding via the embedding service.
-   Writes an empty `:document` — the field is a Chroma-era duplicate of
-   `:content`. Reads never project it (see `default-read-fields`)."
-  [entry collection-name]
+(defn entry->record-pure
+  "PURE: Convert a memory entry + a precomputed embedding vector into a
+   Milvus insert record. Performs NO embedding lookup, NO provider
+   resolution, NO I/O — the caller is responsible for producing the
+   embedding via `hive-milvus.embedder/embed-for-entry` first.
+
+   Splits CPPB stages: this fn is PROMOTE only; the embedding side of
+   the record (BOUNDARY) lives in `hive-milvus.embedder`. Callers that
+   skip the embed step ship a record with an empty vector (suitable
+   for tests / id-only updates that intentionally don't re-vectorize)."
+  [entry _collection-name embedding]
   (let [raw-content (or (:content entry) "")
-        content     (if (map? raw-content) (json/write-str raw-content) (str raw-content))
-        embedding   (embed-svc/embed-for-collection collection-name content)]
+        content     (if (map? raw-content) (json/write-str raw-content) (str raw-content))]
     {:id              (or (:id entry) (proto/generate-id))
-     :embedding       embedding
+     :embedding       (or embedding [])
      :document        ""
      :type            (or (some-> (:type entry) name) "note")
      :tags            (tags->str (:tags entry))
@@ -86,6 +91,22 @@
      :helpful_count   (or (:helpful-count entry) 0)
      :unhelpful_count (or (:unhelpful-count entry) 0)
      :project_id      (or (:project-id entry) "")}))
+
+(defn entry->record
+  "LEGACY FACADE — invokes the BOUNDARY embedder then builds the record.
+   Throws if the embedder fails. Prefer the explicit two-step path:
+
+     (let [emb-res (embedder/embed-for-entry entry coll)]
+       (if (r/ok? emb-res)
+         (entry->record-pure entry coll (:ok emb-res))
+         (handle-err emb-res)))
+
+   so embedding failures stay railway-tracked instead of escaping as
+   exceptions. This 2-arg arity is retained for back-compat with
+   pre-CPPB-refactor call sites."
+  [entry collection-name]
+  (let [embedding (embedder/embed-for-entry-or-throw entry collection-name)]
+    (entry->record-pure entry collection-name embedding)))
 
 (defn try-parse-json
   "Parse JSON string to map/vec, return original on failure."

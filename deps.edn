@@ -8,13 +8,22 @@
 
         ;; hive-mcp protocols (IMemoryStore, IAddon)
         ;; Only the protocol interfaces — no concrete implementations
-        io.github.hive-agi/hive-mcp {:git/tag "v0.16.5" :git/sha "0841397"}
+        io.github.hive-agi/hive-mcp {:git/tag "v0.16.6" :git/sha "637fb28"}
 
         ;; Config DI — typed env var resolution with ADT backing
         io.github.hive-agi/hive-di {:git/tag "v0.3.1" :git/sha "ab63fd0"}
 
         ;; Bounded parallelism — queue drain uses hive-weave.parallel/bounded-pmap
-        io.github.hive-agi/hive-weave {:git/tag "v0.2.2" :git/sha "7aa6234"}}
+        io.github.hive-agi/hive-weave {:git/tag "v0.2.2" :git/sha "7aa6234"}
+
+        ;; Pure helpers for actionable error/help messages
+        ;; (transitive: hive-mcp.embeddings.routing requires hive-help.core)
+        io.github.hive-agi/hive-help {:git/tag "v0.1.0" :git/sha "20ed760"}
+
+        ;; CPPB pattern macros (Collect → Promote → Pipeline → Boundary).
+        ;; Used by hive-milvus.relocate.* — standalone Apache 2.0 lib.
+        io.github.hive-agi/hive-cppb
+        {:git/tag "v0.1.0" :git/sha "a3a06e1"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]

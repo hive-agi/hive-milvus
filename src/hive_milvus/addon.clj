@@ -22,7 +22,8 @@
             [hive-milvus.config :as config]
             [hive-milvus.store :as store]
             [hive-dsl.result :as r]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-milvus.relocate-addon :as reloc-addon]))
 
 (defrecord MilvusAddon [store-atom]
   addon-proto/IAddon
@@ -38,8 +39,6 @@
     (try
       (let [resolution (config/resolve-MilvusConfig (or addon-config {}))]
         (if (r/err? resolution)
-          ;; Config resolution failed — surface every collected error so
-          ;; operators see the full picture in one pass.
           (let [errs (mapv (fn [{:keys [field message] :as e}]
                              (or message (pr-str (assoc e :field field))))
                            (:errors resolution))]
@@ -57,6 +56,12 @@
               (do
                 (reset! store-atom store)
                 (mem-proto/set-store! store)
+                ;; Contribute relocate-* commands to the consolidated
+                ;; `memory` MCP tool. Idempotent — safe across reloads.
+                (try (reloc-addon/install!)
+                     (catch Throwable e
+                       (log/warn "Relocate addon install! failed (non-fatal):"
+                                 (.getMessage e))))
                 (log/info "MilvusAddon initialized — set as active memory store"
                           {:host      (:host resolved)
                            :port      (:port resolved)
@@ -74,6 +79,12 @@
     (when-let [store @store-atom]
       (mem-proto/disconnect! store)
       (reset! store-atom nil)
+      ;; Retract relocate-* commands so a fresh init re-contributes
+      ;; cleanly.
+      (try (reloc-addon/uninstall!)
+           (catch Throwable e
+             (log/debug "Relocate addon uninstall! failed (non-fatal):"
+                        (.getMessage e))))
       (log/info "MilvusAddon shut down"))
     nil)
 
