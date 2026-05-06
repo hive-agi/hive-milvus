@@ -8,13 +8,13 @@
 
         ;; hive-mcp protocols (IMemoryStore, IAddon)
         ;; Only the protocol interfaces — no concrete implementations
-        io.github.hive-agi/hive-mcp {:git/tag "v0.16.6" :git/sha "637fb28"}
+        io.github.hive-agi/hive-mcp {:git/tag "v0.16.7" :git/sha "0222203"}
 
         ;; Config DI — typed env var resolution with ADT backing
         io.github.hive-agi/hive-di {:git/tag "v0.3.1" :git/sha "ab63fd0"}
 
         ;; Bounded parallelism — queue drain uses hive-weave.parallel/bounded-pmap
-        io.github.hive-agi/hive-weave {:git/tag "v0.2.2" :git/sha "7aa6234"}
+        io.github.hive-agi/hive-weave {:git/tag "v0.2.3" :git/sha "c9510b7"}
 
         ;; Pure helpers for actionable error/help messages
         ;; (transitive: hive-mcp.embeddings.routing requires hive-help.core)
@@ -33,7 +33,7 @@
                           io.github.hive-agi/hive-di   {:git/tag "v0.3.1" :git/sha "ab63fd0"}}}
   :migrate {:extra-deps {org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
                          org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
-                         io.github.hive-agi/hive-dsl {:git/tag "v0.4.1" :git/sha "07ab02a"}}
+                         io.github.hive-agi/hive-dsl {:git/tag "v0.5.1" :git/sha "335869e"}}
             :override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.2.0" :git/sha "33dcd3f"}
                             io.github.hive-agi/hive-di   {:git/tag "v0.3.1" :git/sha "ab63fd0"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
