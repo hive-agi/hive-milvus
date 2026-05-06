@@ -152,12 +152,17 @@
        :detail (dissoc res :error)})))
 
 (defn query-entries
+  "Fan out a scalar-filter query across every known collection.
+
+   Per-collection failures (transient transport drops, missing index,
+   schema drift on legacy collections) are isolated: the offending coll
+   contributes [] and the others return their hits. The failure is
+   logged at WARN so callers don't read a silent empty result as
+   `:limit not respected` (the silent-swallow used to surface as the
+   user-visible bug 20260503012357-7d008e50)."
   [config-atom opts]
   (resilient config-atom
-    (let [;; Fan out across every known collection (canonical + any legacy
-          ;; per-dim collections left from prior embedder swaps). Type is
-          ;; carried in filter-expr so non-matching collections return [].
-          colls (lookup/known-collections config-atom)
+    (let [colls (lookup/known-collections config-atom)
           {:keys [limit output-fields order-by]
            :or {limit 100}} opts
           fields (or output-fields schema/default-read-fields)
@@ -175,7 +180,11 @@
                             {:filter "id != \"\"" :limit limit
                              :output-fields fields
                              :consistency-level :bounded}))
-                       (catch Exception _ [])))
+                       (catch Exception e
+                         (log/warn "milvus query-entries: collection"
+                                   coll-name "failed —" (.getMessage e)
+                                   "(returning [] for this coll)")
+                         [])))
                    colls)]
       (-> (mapv schema/record->entry fan-out)
           (apply-order-by order-by)
