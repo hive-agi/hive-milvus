@@ -11,16 +11,27 @@
    DDD: Repository pattern — MilvusMemoryStore is the Milvus aggregate adapter.
 
    This namespace is the façade over four cohesive submodules:
-     hive-milvus.store.schema  — entry<->record, filter expressions
-     hive-milvus.store.index   — collection loading + scalar indexes
-     hive-milvus.store.query   — single-entry read / read-modify-write
-     hive-milvus.store.health  — reconnect loop, resilient retry, liveness
+     hive-milvus.store.schema       — entry<->record, filter expressions
+     hive-milvus.store.index        — collection loading + scalar indexes
+     hive-milvus.store.query        — single-entry read / read-modify-write
+     hive-milvus.resilience.retry   — reactive retry pipeline + `resilient`
+     hive-milvus.resilience.probe   — cached liveness query
+     hive-milvus.resilience.reconnect — background heal loop, probe-verified
+
+   The old `hive-milvus.store.health` was a 5-responsibility monolith
+   (circuit, probe, reconnect-loop, retry, classify); split into the
+   three `resilience.*` nses per SRP. `store.health` now exists as a
+   deprecation shim that re-exports the new locations so external
+   callers don't break.
 
    The `defrecord MilvusMemoryStore` + `create-store` live here because
    the protocol methods can't be split across files."
   (:require [hive-mcp.protocols.memory :as proto]
+            [hive-mcp.protocols.memory-liveness :as liveness]
+            [hive-milvus.resilience.probe :as probe]
+            [hive-milvus.resilience.reconnect :as reconnect]
+            [hive-milvus.resilience.retry :as resilience :refer [resilient]]
             [hive-milvus.store.schema :as schema]
-            [hive-milvus.store.health :as health :refer [resilient]]
             [taoensso.timbre :as log]
             [hive-milvus.store.lifecycle :as lifecycle]
             [hive-milvus.store.entries :as entries]
@@ -42,7 +53,7 @@
 (def build-filter-expr      schema/build-filter-expr)
 (def staleness-probability  schema/staleness-probability)
 (def helpfulness-map        schema/helpfulness-map)
-(def with-auto-reconnect    health/with-auto-reconnect)
+(def with-auto-reconnect    resilience/with-auto-reconnect)
 
 ;; =========================================================================
 ;; Ordering — Milvus query-scalar lacks server-side ORDER BY. We sort
@@ -145,6 +156,27 @@
   MilvusMemoryStore
   (update-metadata! [this id updates]
     (entries/update-fields-keep-embedding! (:config-atom this) id updates)))
+
+;; -------------------------------------------------------------------------
+;; IMemoryStoreLiveness — cross-store resilience seam
+;; -------------------------------------------------------------------------
+;;
+;; Delegates to the resilience.* nses so hive-mcp.vectordb.resilience
+;; never imports any hive-milvus.* internal symbol. Adding a new transport
+;; (e.g. WebSocket) requires zero changes here — only an `extend-type`
+;; for milvus-clj.client/ILivenessProbe.
+
+(extend-protocol liveness/IMemoryStoreLiveness
+  MilvusMemoryStore
+  (-probe! [_this]
+    ;; Bypass the cache and issue a fresh probe RPC. Returns true/false
+    ;; under r/rescue, never throws — the resilience layer wants a boolean.
+    (probe/probe-once!))
+  (-kick-reconnect! [this]
+    (reconnect/kick! (:config-atom this))
+    nil)
+  (-await-reconnect! [_this budget-ms]
+    (reconnect/await! budget-ms)))
 
 (defn create-store
   "Create a new Milvus-backed memory store.

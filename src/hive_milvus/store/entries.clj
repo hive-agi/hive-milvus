@@ -1,7 +1,7 @@
 (ns hive-milvus.store.entries
   "Core entry CRUD, query, search, expiry, and status helpers."
   (:require [hive-mcp.embeddings.service :as embed-svc]
-            [hive-milvus.store.health :refer [resilient]]
+            [hive-milvus.resilience.retry :refer [resilient]]
             [hive-milvus.store.index :as index]
             [hive-milvus.store.lookup :as lookup]
             [hive-milvus.store.query :as query]

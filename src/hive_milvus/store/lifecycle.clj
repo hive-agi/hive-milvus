@@ -1,11 +1,46 @@
 (ns hive-milvus.store.lifecycle
   "Connection lifecycle helpers for MilvusMemoryStore."
   (:require [hive-mcp.embeddings.service :as embed-svc]
+            [hive-milvus.collections :as collections]
             [hive-milvus.store.health :as health]
             [hive-milvus.store.index :as index]
             [hive-milvus.store.schema :as schema]
             [milvus-clj.api :as milvus]
             [taoensso.timbre :as log]))
+
+(defn- dim-from-chroma-name
+  "Parse the trailing `-<N>d` suffix from a chroma collection name.
+   `hive-mcp-memory-4096d` → 4096; `hive-mcp-memory` → 768 (default)."
+  [chroma-name]
+  (if-let [m (re-find #"-(\d+)d$" (str chroma-name))]
+    (parse-long (second m))
+    768))
+
+(defn- preload-known-collections!
+  "After the legacy 768-d collection is loaded, walk every chroma-style
+   collection name `embed-svc/type->collection-names` knows about and
+   ensure each one is created + loaded + scalar-indexed. Without this
+   the first write to any non-default-dim collection (e.g. the 4096-d
+   collection used by :type/decision) pays the full Milvus
+   `load-collection` cost mid-request, easily exceeding the 30 s
+   memory-write budget and surfacing as a misleading 'memory add timed
+   out' error.
+
+   Each ensure-collection! call is independent + idempotent — a single
+   slow load doesn't block the others, and re-running is cheap because
+   the per-collection memo short-circuits."
+  []
+  (try
+    (doseq [chroma-name (embed-svc/type->collection-names nil)]
+      (let [milvus-name (collections/collection->milvus-name chroma-name)
+            dimension   (dim-from-chroma-name chroma-name)]
+        (try
+          (index/ensure-collection! milvus-name dimension)
+          (log/info "Preloaded Milvus collection:" milvus-name "dim:" dimension)
+          (catch Throwable t
+            (log/warn "Preload of" milvus-name "failed (non-fatal):" (.getMessage t))))))
+    (catch Throwable t
+      (log/warn "Could not enumerate known collections for preload:" (.getMessage t)))))
 
 (defn connect!
   [config-atom config]
@@ -33,6 +68,7 @@
               (milvus/connect! milvus-config)
               (let [dimension (embed-svc/get-dimension-for coll-name)]
                 (index/ensure-collection! coll-name dimension))
+              (preload-known-collections!)
               {:success? true
                :backend  "milvus"
                :errors   []

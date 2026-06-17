@@ -20,8 +20,13 @@
 
    Thread-safety: single atom, swap! transitions; listener fns run on
    the caller's thread that closed the breaker (keep them fast or spawn
-   futures inside)."
-  (:require [taoensso.timbre :as log]))
+   futures inside).
+
+   Time discipline: routes wall-clock through `hive-ttracking.clock/now-millis`
+   so tests can pin time deterministically — never call
+   `System/currentTimeMillis` directly."
+  (:require [hive-ttracking.clock :as clock]
+            [taoensso.timbre :as log]))
 
 ;; =========================================================================
 ;; State
@@ -107,7 +112,7 @@
    Side effect: transitions :open -> :half-open when cooldown has
    elapsed, so the next caller gets a probe slot."
   []
-  (let [now   (System/currentTimeMillis)
+  (let [now   (clock/now-millis)
         new-s (swap! breaker-state
                        (fn [{:keys [state opened-at cooldown-ms] :as s}]
                          (if (and (= state :open)
@@ -132,7 +137,7 @@
    - :half-open -> trip back to :open (probe failed).
    - :open      -> no-op (cooldown already running)."
   []
-  (let [now (System/currentTimeMillis)
+  (let [now (clock/now-millis)
         prev (swap-vals! breaker-state
                          (fn [{:keys [state failures threshold] :as s}]
                            (case state

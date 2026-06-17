@@ -1,6 +1,6 @@
 (ns hive-milvus.store.analytics
   "Analytics protocol helpers for MilvusMemoryStore."
-  (:require [hive-milvus.store.health :refer [resilient]]
+  (:require [hive-milvus.resilience.retry :refer [resilient]]
             [hive-milvus.store.lookup :as lookup]
             [hive-milvus.store.query :as query]
             [hive-milvus.store.schema :as schema]))

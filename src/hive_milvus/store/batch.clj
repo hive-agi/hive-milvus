@@ -1,6 +1,6 @@
 (ns hive-milvus.store.batch
   "Batch protocol helpers for MilvusMemoryStore."
-  (:require [hive-milvus.store.health :refer [resilient]]
+  (:require [hive-milvus.resilience.retry :refer [resilient]]
             [hive-milvus.store.lookup :as lookup]
             [hive-milvus.store.schema :as schema]
             [milvus-clj.api :as milvus]))
