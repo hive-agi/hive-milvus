@@ -54,11 +54,47 @@
        :max-tokens      2048
        :provider-key    :fallback})))
 
-(defn coll-for-entry
-  "Resolve the routed Milvus collection for an entry map. Uses `:type`
-   when present, otherwise the default."
+(defn- entry-content-str
+  "Coerce an entry's :content to a string for size estimation. Mirrors
+   `hive-milvus.embedder/entry->content` exactly (JSON for maps) so the
+   escalation decision is identical at the collection-routing and embedding
+   sites — keeping the stored vector's dimension coherent with the collection."
   [entry]
-  (coll-for-type (:type entry)))
+  (let [raw (or (:content entry) "")]
+    (if (map? raw)
+      (try ((requiring-resolve 'clojure.data.json/write-str) raw)
+           (catch Exception _ (pr-str raw)))
+      (str raw))))
+
+(defn coll-for-type+size
+  "Like `coll-for-type` but size-aware: when `content` overflows the type's
+   routed provider, escalates to the bigger-context provider's collection so
+   the stored vector's dimension matches what `embed-for-entry` will produce."
+  [memory-type content]
+  (try
+    (let [{:keys [collection-name dimension max-tokens provider-key]}
+          (embed-svc/resolve-provider-for-type+size (or memory-type "note") content)]
+      {:collection-name (chroma->milvus collection-name)
+       :dimension       dimension
+       :max-tokens      max-tokens
+       :provider-key    provider-key})
+    (catch Exception e
+      (log/debug "coll-for-type+size fallback for" memory-type "—" (.getMessage e))
+      {:collection-name base-collection-name
+       :dimension       768
+       :max-tokens       2048
+       :provider-key    :fallback})))
+
+(defn coll-for-entry
+  "Resolve the routed Milvus collection for an entry map. Size-aware: oversized
+   content escalates to the bigger provider's collection so the stored vector's
+   dimension matches. No-embed types (structurally-addressed blobs) route to
+   their default-provider collection — a zero placeholder vector of that
+   dimension is stored by `embed-for-entry`."
+  [entry]
+  (if (embed-svc/no-embed-type? (:type entry))
+    (coll-for-type (:type entry))
+    (coll-for-type+size (:type entry) (entry-content-str entry))))
 
 (defn ensure-routed!
   "Ensure the routed Milvus collection exists with the correct dimension

@@ -63,8 +63,25 @@
       (str/blank? content)
       (r/ok [])
 
+      ;; Structurally-addressed types (e.g. c4-snapshot) are never semantically
+      ;; searched — skip the provider call and emit a zero placeholder vector
+      ;; sized to the routed collection's dimension. Milvus requires a fixed-dim
+      ;; vector, so an empty vector would be rejected on insert. The dimension
+      ;; is taken from the type's DEFAULT provider — matching
+      ;; routing/coll-for-entry's no-embed branch (coll-for-type, no escalation).
+      (embed-svc/no-embed-type? (:type entry))
+      (let [dim (try (:dimension (embed-svc/resolve-provider-for-type (:type entry)))
+                     (catch Exception _ 768))]
+        (r/ok (vec (repeat (or dim 768) 0.0))))
+
       :else
-      (if-let [provider (resolve-provider entry collection-name)]
+      ;; Size-aware provider (escalates to a bigger-context embedder for
+      ;; oversized content) — MUST match routing/coll-for-entry's escalated
+      ;; collection so the vector dimension agrees with the target collection.
+      (if-let [provider (or (some-> (:type entry)
+                                    (embed-svc/resolve-provider-for-type+size content)
+                                    :provider)
+                            (resolve-provider entry collection-name))]
         (r/try-effect* :embedder/embed-failed
           (let [embed-fn (requiring-resolve 'hive-mcp.chroma.embeddings/embed-text)]
             (embed-fn provider content)))
