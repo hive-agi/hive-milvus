@@ -98,6 +98,7 @@
                       (catch Throwable _ nil))]
     (or (= :connection-failure category)
         (= :retryable category)
+        (boolean (:milvus/timeout (ex-data link)))
         (transient-message? (some-> link .getMessage)))))
 
 (defn classify

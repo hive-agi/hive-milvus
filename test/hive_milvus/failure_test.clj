@@ -57,6 +57,22 @@
           f (failure/classify e)]
       (is (#{:milvus/fatal :milvus/transient} (adt/adt-variant f))))))
 
+(deftest classify-bounded-deref-timeout
+  (testing ":milvus/timeout ex-data tag (bounded RPC deref) -> :milvus/transient"
+    (let [e (ex-info "milvus get timed out after 5000ms"
+                     {:milvus/timeout true :op :get})
+          f (failure/classify e)]
+      (is (= :milvus/transient (adt/adt-variant f)))
+      (is (failure/transient? f)))))
+
+(deftest classify-execution-exception-wrapping-timeout
+  (testing "ExecutionException wrapping a :milvus/timeout ex-info -> :milvus/transient"
+    (let [inner (ex-info "timed out" {:milvus/timeout true})
+          outer (ExecutionException. "wrapped" inner)
+          f     (failure/classify outer)]
+      (is (= :milvus/transient (adt/adt-variant f))
+          "classifier must see the timeout tag through the cause chain"))))
+
 ;; =============================================================================
 ;; Wrapper-unwinding — future/async chains swallow tagged ex-data, classifier
 ;; must walk .getCause to see the tagged/transient inner throwable.
