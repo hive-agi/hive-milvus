@@ -6,7 +6,9 @@
             [hive-milvus.store.index :as index]
             [hive-milvus.store.schema :as schema]
             [milvus-clj.api :as milvus]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-milvus.resilience.reconnect :as reconnect]
+            [hive-milvus.resilience.scheduler :as scheduler]))
 
 (defn- dim-from-chroma-name
   "Parse the trailing `-<N>d` suffix from a chroma collection name.
@@ -60,44 +62,59 @@
         coll-name     (or (:collection-name config) "hive_mcp_memory")
         max-retries   6
         base-ms       1000
-        max-ms        15000]
-    (swap! config-atom merge config)
-    (loop [attempt 1]
-      (let [result
-            (try
-              (milvus/connect! milvus-config)
-              (let [dimension (embed-svc/get-dimension-for coll-name)]
-                (index/ensure-collection! coll-name dimension))
-              (preload-known-collections!)
-              {:success? true
-               :backend  "milvus"
-               :errors   []
-               :metadata (select-keys @config-atom [:host :port :collection-name])}
-              (catch Exception e
-                {:success? false
-                 :backend  "milvus"
-                 :errors   [(.getMessage e)]
-                 :metadata {}}))]
-        (cond
-          (:success? result)
-          result
+        max-ms        15000
+        result
+        (do
+          (swap! config-atom merge config)
+          (loop [attempt 1]
+            (let [result
+                  (try
+                    (milvus/connect! milvus-config)
+                    (let [dimension (embed-svc/get-dimension-for coll-name)]
+                      (index/ensure-collection! coll-name dimension))
+                    (preload-known-collections!)
+                    {:success? true
+                     :backend  "milvus"
+                     :errors   []
+                     :metadata (select-keys @config-atom [:host :port :collection-name])}
+                    (catch Exception e
+                      {:success? false
+                       :backend  "milvus"
+                       :errors   [(.getMessage e)]
+                       :metadata {}}))]
+              (cond
+                (:success? result)
+                result
 
-          (>= attempt max-retries)
-          (do
-            (log/warn "Milvus connect failed after" max-retries
-                      "foreground attempts; handing off to background healing loop")
-            (when-not (:running? @health/reconnect-state)
-              (health/start-reconnect-loop! config-atom))
-            (assoc result :reconnecting? true))
+                (>= attempt max-retries)
+                (do
+                  (log/warn "Milvus connect failed after" max-retries
+                            "foreground attempts; handing off to background healing loop")
+                  (when-not (:running? @health/reconnect-state)
+                    (health/start-reconnect-loop! config-atom))
+                  (assoc result :reconnecting? true))
 
-          :else
-          (let [wait (health/backoff-ms attempt base-ms max-ms)]
-            (log/info "Milvus connect attempt" attempt "failed, retrying in" (/ wait 1000.0) "s")
-            (Thread/sleep wait)
-            (recur (inc attempt))))))))
+                :else
+                (let [wait (health/backoff-ms attempt base-ms max-ms)]
+                  (log/info "Milvus connect attempt" attempt "failed, retrying in" (/ wait 1000.0) "s")
+                  (Thread/sleep wait)
+                  (recur (inc attempt)))))))]
+    ;; Idle heartbeat (proactive resilience): once the connection is
+    ;; established — or handed off to the background heal loop — start the
+    ;; periodic liveness scheduler so a blip that happens with NO traffic
+    ;; still heals, instead of waiting for the next operation to notice.
+    ;; Idempotent: a re-connect! won't double-start it.
+    (scheduler/start! config-atom)
+    result))
 
 (defn disconnect!
   []
+  ;; Stop proactive healing BEFORE teardown so neither the idle scheduler nor
+  ;; the background reconnect loop races to re-open the client the operator
+  ;; just deliberately closed (reconnect/stop! is documented for exactly this
+  ;; path; disconnect! previously never called it — a latent race).
+  (scheduler/stop!)
+  (reconnect/stop!)
   (try
     (milvus/disconnect!)
     (reset! index/loaded-collections #{})
