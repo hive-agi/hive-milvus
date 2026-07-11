@@ -20,6 +20,7 @@
   (:require [clojure.string :as str]
             [hive-dsl.result :as r]
             [hive-mcp.embeddings.service :as embed-svc]
+            [hive-mcp.embeddings.resilient :as resilient]
             [taoensso.timbre :as log]))
 
 (defn- ^String entry->content
@@ -44,6 +45,18 @@
       (when collection-name
         (try (embed-svc/get-provider-for collection-name)
              (catch Exception _ nil)))))
+
+(defn- resilient-embedder-for
+  "Bounded failover embedder for `entry`: the type-routed same-dimension chain,
+   or a single collection-keyed provider wrapped as a one-element chain. Returns
+   an EmbeddingProvider, or nil when nothing resolves."
+  [entry collection-name content]
+  (let [chain (some-> (:type entry)
+                      (embed-svc/resolve-provider-chain-for-type+size content))]
+    (if (seq chain)
+      (resilient/resilient-embedder chain)
+      (when-let [p (resolve-provider entry collection-name)]
+        (resilient/resilient-embedder [{:provider p :provider-key :collection-fallback}])))))
 
 (defn embed-for-entry
   "Re-embed `entry`'s content using the provider that current routing
@@ -75,16 +88,10 @@
         (r/ok (vec (repeat (or dim 768) 0.0))))
 
       :else
-      ;; Size-aware provider (escalates to a bigger-context embedder for
-      ;; oversized content) — MUST match routing/coll-for-entry's escalated
-      ;; collection so the vector dimension agrees with the target collection.
-      (if-let [provider (or (some-> (:type entry)
-                                    (embed-svc/resolve-provider-for-type+size content)
-                                    :provider)
-                            (resolve-provider entry collection-name))]
+      (if-let [embedder (resilient-embedder-for entry collection-name content)]
         (r/try-effect* :embedder/embed-failed
           (let [embed-fn (requiring-resolve 'hive-mcp.chroma.embeddings/embed-text)]
-            (embed-fn provider content)))
+            (embed-fn embedder content)))
         (do
           (log/warn "embed-for-entry: no provider resolves for entry"
                     {:type (:type entry) :collection collection-name})

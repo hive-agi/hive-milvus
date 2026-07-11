@@ -7,3 +7,4 @@ target/
 .clj-kondo/.cache/
 local.deps.edn
 .clj-kondo/
+*.elc
