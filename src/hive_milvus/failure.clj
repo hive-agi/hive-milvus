@@ -26,7 +26,8 @@
    No side effects. No milvus/* singleton calls. Just shapes."
   (:require [clojure.string :as str]
             [hive-dsl.adt :as adt]
-            [milvus-clj.client :as client]))
+            [milvus-clj.client :as client]
+            [malli.core :as m]))
 
 ;; =============================================================================
 ;; ADT
@@ -155,3 +156,12 @@
     {:success?      false
      :errors        [msg]
      :reconnecting? (not= :milvus/fatal variant)}))
+
+(def MilvusFailureSchema
+  "Runtime shape of the MilvusFailure ADT value returned by classify."
+  [:map {:closed false}
+   [:adt/type [:= :MilvusFailure]]
+   [:adt/variant [:enum :milvus/transient :milvus/fatal]]
+   [:message :string]])
+
+(m/=> classify [:=> [:cat [:fn #(instance? Throwable %)]] MilvusFailureSchema])

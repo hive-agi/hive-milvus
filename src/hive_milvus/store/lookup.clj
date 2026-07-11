@@ -8,7 +8,8 @@
    into it without creating a cycle (entries → pipeline → collectors
    → entries). No upward dependencies — only `routing` + `query`."
   (:require [hive-milvus.store.query :as query]
-            [hive-milvus.store.routing :as routing]))
+            [hive-milvus.store.routing :as routing]
+            [malli.core :as m]))
 
 (defn legacy-coll-name
   "Pinned config collection (legacy single-coll path). Used as a fan-out
@@ -35,3 +36,7 @@
             (when (query/get-entry-by-id coll id) coll)
             (catch Exception _ nil)))
         (known-collections config-atom)))
+
+(m/=> known-collections
+      [:=> [:cat [:fn {:error/message "config atom"} #(instance? clojure.lang.IAtom %)]]
+       [:vector :string]])

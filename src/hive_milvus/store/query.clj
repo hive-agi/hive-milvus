@@ -7,7 +7,8 @@
    through, and the resilient-retry wrapper is applied by the caller."
   (:require [hive-milvus.store.deref :as d]
             [hive-milvus.store.schema :as schema]
-            [milvus-clj.api :as milvus]))
+            [milvus-clj.api :as milvus]
+            [malli.core :as m]))
 
 (defn get-entry-by-id
   "Fetch a single entry by ID from Milvus. Returns entry map or nil.
@@ -27,3 +28,5 @@
                    collection-name)]
       (d/deref! :add (milvus/add collection-name [record] :upsert? true))
       merged)))
+
+(m/=> get-entry-by-id [:=> [:cat :string :any] [:maybe schema/Entry]])

@@ -9,7 +9,8 @@
             [hive-mcp.dns.result :as r]
             [clojure.data.json :as json]
             [clojure.string :as str]
-            [hive-milvus.embedder :as embedder]))
+            [hive-milvus.embedder :as embedder]
+            [malli.core :as m]))
 
 ;; =========================================================================
 ;; Pure Calculations
@@ -191,3 +192,14 @@
                              (now-iso) "\")")))]
     (when (seq clauses)
       (str/join " and " clauses))))
+
+(def Entry
+  "Runtime shape of a memory entry produced by record->entry (open map)."
+  [:map {:closed false}
+   [:id :any] [:type :keyword] [:content :any] [:tags [:sequential :any]]
+   [:content-hash :any] [:created :any] [:updated :any] [:duration :keyword]
+   [:expires [:maybe :string]] [:access-count :int] [:helpful-count :int]
+   [:unhelpful-count :int] [:project-id [:maybe :string]]
+   [:distance {:optional true} :any]])
+
+(m/=> record->entry [:=> [:cat map?] Entry])
