@@ -6,7 +6,7 @@
    (and tested) independently of the connection + resilience machinery."
   (:require [hive-mcp.protocols.memory :as proto]
             [hive-mcp.embeddings.service :as embed-svc]
-            [hive-mcp.dns.result :as r]
+            [hive-dsl.result :as r]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [hive-milvus.embedder :as embedder]

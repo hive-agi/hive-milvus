@@ -1,29 +1,13 @@
 (ns hive-milvus.failure
   "Failure ADT + classifier + legacy-shape translator for hive-milvus.
 
-   Effect-boundary pure core: classifies Throwables into a closed
+   Pure, no side effects: classifies Throwables into the closed
    `MilvusFailure` ADT and translates ADT values back to the legacy
    `{:success? false :errors [...] :reconnecting? ...}` map shape that
-   existing protocol callers expect.
-
-   Classification delegates to `milvus-clj.client/classify-error`, which
-   dispatches on the `::client/transport` ex-data tag set by each
-   transport. This means HTTP-thrown failures (IOException, HTTP 5xx)
-   are recognized just as well as gRPC StatusRuntimeException ones —
-   essential for PR-3's hybrid-transport story where the same store.clj
-   resilience machinery serves both.
-
-   The classifier walks the `.getCause` chain, not just the top
-   throwable. This matters because `milvus-clj.api/*` returns
-   `future`s that hive-milvus derefs inside the resilient body; a
-   transport-thrown `ex-info` carrying the `::client/transport` tag
-   re-surfaces wrapped in `java.util.concurrent.ExecutionException`,
-   whose own ex-data is empty. Classifying only the top wrapper would
-   drop every such transient into `:milvus/fatal` and starve the heal
-   loop — the exact failure mode that motivated
-   `hive-mcp.vectordb.resilience/transient-failure?`.
-
-   No side effects. No milvus/* singleton calls. Just shapes."
+   protocol callers expect. Classification delegates to
+   `milvus-clj.client/classify-error` (dispatch on the
+   `::client/transport` ex-data tag) and walks the full `.getCause`
+   chain, not just the top throwable."
   (:require [clojure.string :as str]
             [hive-dsl.adt :as adt]
             [milvus-clj.client :as client]
@@ -144,12 +128,12 @@
 
 (defn ->legacy-map
   "Translate a MilvusFailure ADT to the legacy fail-map shape expected by
-   hive-mcp protocol callers:
+   protocol callers:
 
      {:success? false :errors [msg] :reconnecting? bool}
 
-   :reconnecting? is true for transient and reconnect-timeout variants
-   (the background heal loop may still recover), false for fatal."
+   :reconnecting? is true for transient and reconnect-timeout variants,
+   false for fatal."
   [failure]
   (let [msg     (:message failure)
         variant (adt/adt-variant failure)]

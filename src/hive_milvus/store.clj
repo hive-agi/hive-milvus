@@ -160,11 +160,6 @@
 ;; -------------------------------------------------------------------------
 ;; IMemoryStoreLiveness — cross-store resilience seam
 ;; -------------------------------------------------------------------------
-;;
-;; Delegates to the resilience.* nses so hive-mcp.vectordb.resilience
-;; never imports any hive-milvus.* internal symbol. Adding a new transport
-;; (e.g. WebSocket) requires zero changes here — only an `extend-type`
-;; for milvus-clj.client/ILivenessProbe.
 
 (extend-protocol liveness/IMemoryStoreLiveness
   MilvusMemoryStore

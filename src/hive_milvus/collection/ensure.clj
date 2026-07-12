@@ -2,22 +2,11 @@
   "L3 — `ICollectionEnsure` impl. Idempotent collection creation with
    dim-check.
 
-   Wraps the existing imperative `hive-milvus.store.index/ensure-collection!`
+   Wraps the imperative `hive-milvus.store.index/ensure-collection!`
    in the Result railway and adds an in-process dim-registry that
    rejects re-ensures requesting a different dimension for the same
-   collection name. This is the precise check that catches a config
-   bug where two `ProviderSpec`s would otherwise route to the same
-   collection with conflicting dims — surfacing the mismatch at
-   `ensure!` time rather than at the first failing upsert.
-
-   Why a process-local atom rather than a server-side dim probe:
-   `milvus-clj.api/get-collection` (HTTP path) currently strips
-   `:typeParams.dim` from its field projection, so we can't read
-   the live dim from Milvus through that surface. The in-process
-   registry is a defense-in-depth layer; the resilience layer
-   (`hive-mcp.resilience.classify`) already converts a Milvus 1804
-   into `:err/schema-mismatch` at upsert time — this fires earlier
-   for free."
+   collection name, surfacing a dim mismatch at `ensure!` time rather
+   than at the first failing upsert."
   (:require [hive-dsl.result :as r]
             [hive-milvus.collection.protocol :as proto]
             [hive-milvus.store.index :as index]
