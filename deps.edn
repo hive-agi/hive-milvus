@@ -3,8 +3,8 @@
         org.clojure/data.json     {:mvn/version "2.5.1"}
         com.taoensso/timbre       {:mvn/version "6.8.0"}
 
-        ;; Milvus Java SDK client wrapper
-        io.github.hive-agi/milvus-clj {:git/tag "v0.2.0" :git/sha "33dcd3fe0ed7b8ee9e8b13f0ebeee174ea9cc0f3"}
+        ;; Milvus Java SDK client wrapper (Clojars)
+        io.github.hive-agi/milvus-clj {:mvn/version "0.2.3"}
 
         ;; hive-mcp protocols (IMemoryStore, IAddon)
         ;; Only the protocol interfaces — no concrete implementations
@@ -39,16 +39,16 @@
  {:dev  {:extra-paths ["dev" "test"]
          :extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}
                       cider/cider-nrepl {:mvn/version "0.58.0"}}}
-  :local {:override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.2.0" :git/sha "33dcd3f"}
+  :local {:override-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.3"}
                           io.github.hive-agi/hive-di   {:git/tag "v0.3.1" :git/sha "ab63fd0"}}}
   :migrate {:extra-deps {org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
                          org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
                          io.github.hive-agi/hive-dsl {:git/tag "v0.5.2" :git/sha "8d9760c"}}
-            :override-deps {io.github.hive-agi/milvus-clj {:git/tag "v0.2.0" :git/sha "33dcd3f"}
+            :override-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.3"}
                             io.github.hive-agi/hive-di   {:git/tag "v0.3.1" :git/sha "ab63fd0"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
-  ;; The published milvus-clj/hive-mcp pins lag the code hive-milvus is developed
-  ;; against, so the suite cannot resolve standalone. Compose with :test.
+  ;; Sibling :local/root overrides so the suite resolves standalone when the
+  ;; git-pinned siblings lag the code here. Compose with :test.
   :local-src {:override-deps {io.github.hive-agi/milvus-clj {:local/root "../milvus-clj"}
                               io.github.hive-agi/hive-mcp   {:local/root "../hive-mcp"}
                               io.github.hive-agi/hive-spi    {:local/root "../hive-spi"}}}

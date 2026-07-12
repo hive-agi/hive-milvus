@@ -1,0 +1,1 @@
+{:host "localhost", :port 19530, :collection-name "hive_mcp_memory"}

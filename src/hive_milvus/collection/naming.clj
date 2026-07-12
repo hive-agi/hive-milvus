@@ -15,11 +15,12 @@
    Why this lives outside `routing.clj`: SRP. Routing is about
    resolving a `ProviderSpec`; naming is about projecting a dim to a
    string. The L2 locator composes both."
-  (:require [hive-milvus.collections :as collections]))
+  (:require [clojure.string :as str]
+            [hive-milvus.collections :as collections]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
-;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; SPDX-License-Identifier: MIT
 
 (def ^:const legacy-base-collection
   "Legacy Chroma name preserved for backward compatibility with
@@ -54,6 +55,19 @@
    transform lives in one place."
   [chroma-coll-name]
   (collections/collection->milvus-name chroma-coll-name))
+
+(defn dim-of
+  "Pure — inverse of `chroma-name`: the dimension the vectors of
+   `coll-name` carry, read back from the name. Accepts both the
+   Chroma (`-2560d`) and Milvus (`_2560d`) spellings. nil when the
+   name is not a memory collection, so a caller can tell 'unknown'
+   from 'known and 768'."
+  [coll-name]
+  (let [n (str/replace (str coll-name) "_" "-")]
+    (when (str/starts-with? n legacy-base-collection)
+      (if-let [[_ d] (re-find #"-(\d+)d$" n)]
+        (parse-long d)
+        legacy-dim))))
 
 (defn ref-for-dim
   "Pure — dim → `CollectionRef` map. Computes both Chroma and Milvus
