@@ -26,50 +26,88 @@
             [hive-milvus.relocate.promoters.record :as p-record]
             [hive-milvus.relocate.promoters.routing :as p-routing]))
 
-(defn relocate-one
-  "Relocate the entry at `id` from its current collection to the
-   canonical target (per current type-routing config).
+(defprotocol ISourceDisposition
+  (-after-write [this bundle]
+    "What becomes of the source row once the target write has landed.")
+  (-describe-disposition [this]))
+
+(defrecord DeleteSource []
+  ISourceDisposition
+  (-after-write [_ bundle] (boundary/milvus-delete! (r/ok bundle)))
+  (-describe-disposition [_] :move))
+
+(defrecord KeepSource []
+  ISourceDisposition
+  (-after-write [_ bundle] (r/ok bundle))
+  (-describe-disposition [_] :copy))
+
+(defn delete-source
+  "Move: the source row is removed once the target write has landed."
+  []
+  (->DeleteSource))
+
+(defn keep-source
+  "Copy: the source row is left exactly where it is. The old collection stays a
+   readable backup, at the cost of holding the entry twice."
+  []
+  (->KeepSource))
+
+(defn place-one
+  "Put the entry at `id` into its canonical collection, then let `disposition`
+   decide what happens to the source row.
 
    Returns:
-     (r/ok {:moved? true   :from src :to target :id id})       on move
-     (r/ok {:moved? false  :from src :to target :id id})       on no-op
-     (r/ok {:moved? true   :from src :to target :id id
-            :src-delete-failed? true                            ; partial
-            :src-delete-error msg})
-     (r/err :collector/not-found    {:id id})
-     (r/err :collector/entry-vanished …)
-     (r/err :routing/no-target …)
-     (r/err :embedder/no-provider …)
-     (r/err :embedder/embed-failed …)
-     (r/err :boundary/milvus-write-failed …)
+     (r/ok {:placed? true  :source-kept? bool :from src :to target :id id})
+     (r/ok {:placed? false :from src :to target :id id})          on no-op
+     (r/err :collector/not-found | :routing/no-target |
+            :embedder/embed-failed | :boundary/milvus-write-failed | …)
 
-   Idempotent: relocate-one on an entry already in target returns
-   :no-op without doing any I/O beyond the lookup."
-  [config-atom id]
+   Idempotent: the target write is an upsert, and an entry already in its
+   canonical collection is a no-op."
+  [config-atom id disposition]
   (r/let-ok
     [bundle-collected (col-entry/collect-existing-entry {:config-atom config-atom :id id})
      bundle-targeted  (p-routing/compute-target bundle-collected)
      bundle-classed   (p-routing/classify-relocation-need bundle-targeted)]
     (case (:relocation bundle-classed)
       :no-op
-      (r/ok {:moved? false
-             :from   (:src-coll bundle-classed)
-             :to     (:target-coll bundle-classed)
-             :id     id})
+      (r/ok {:placed? false
+             :from    (:src-coll bundle-classed)
+             :to      (:target-coll bundle-classed)
+             :id      id})
 
       :move
       (r/let-ok
         [bundle-ensured  (boundary/ensure-target-collection bundle-classed)
          bundle-recorded (p-record/build-target-record bundle-ensured)
          bundle-written  (boundary/milvus-write! (r/ok bundle-recorded))
-         bundle-deleted  (boundary/milvus-delete! (r/ok bundle-written))]
-        (r/ok (cond-> {:moved? true
-                       :from   (:src-coll bundle-deleted)
-                       :to     (:target-coll bundle-deleted)
-                       :id     id}
-                (:src-delete-failed? bundle-deleted)
+         bundle-final    (-after-write disposition bundle-written)]
+        (r/ok (cond-> {:placed?      true
+                       :source-kept? (= :copy (-describe-disposition disposition))
+                       :from         (:src-coll bundle-final)
+                       :to           (:target-coll bundle-final)
+                       :id           id}
+                (:src-delete-failed? bundle-final)
                 (assoc :src-delete-failed? true
-                       :src-delete-error (:src-delete-error bundle-deleted))))))))
+                       :src-delete-error (:src-delete-error bundle-final))))))))
+
+(defn relocate-one
+  "Relocate the entry at `id` to its canonical collection, REMOVING it from the
+   source. See `place-one`; `:moved?` mirrors `:placed?` for legacy callers."
+  [config-atom id]
+  (let [res (place-one config-atom id (delete-source))]
+    (if (r/ok? res)
+      (r/ok (let [v (:ok res)] (assoc v :moved? (:placed? v))))
+      res)))
+
+(defn copy-one
+  "Copy the entry at `id` into its canonical collection, LEAVING the source row
+   in place. Non-destructive: the old collection remains a complete backup."
+  [config-atom id]
+  (let [res (place-one config-atom id (keep-source))]
+    (if (r/ok? res)
+      (r/ok (let [v (:ok res)] (assoc v :moved? (:placed? v))))
+      res)))
 
 (defn relocate-update
   "Update-with-relocation: merge `updates` into the entry, recompute

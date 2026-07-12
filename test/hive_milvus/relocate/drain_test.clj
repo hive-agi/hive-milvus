@@ -128,6 +128,69 @@
           "a drain that cannot drain must not claim success"))))
 
 ;; ============================================================================
+;; Copy — non-destructive: the source keeps every row
+;; ============================================================================
+
+(defn- copying-relocate-fn
+  "Models the copy pipeline: the row is written to the target and LEFT in the
+   source. Records what was placed."
+  [placed-atom]
+  (fn [id]
+    (swap! placed-atom conj id)
+    {:moved? true :source-kept? true}))
+
+(deftest copy-places-every-row-and-deletes-nothing
+  (testing "the source still holds all its rows once the copy completes"
+    (let [all    (ids 250)
+          left   (atom all)               ; the source — nothing may leave it
+          placed (atom #{})
+          state  (run-to-completion!
+                  {:id-source   (src/snapshot-source all)
+                   :relocate-fn (copying-relocate-fn placed)})]
+      (is (= :completed (:status state)))
+      (is (= 250 (:moved state)))
+      (is (= (set all) @placed) "every row was placed in the target")
+      (is (= all @left) "and the source is untouched — this is the whole point"))))
+
+(deftest a-snapshot-source-terminates-even-though-nothing-is-deleted
+  (testing "the drain source would spin forever here; the snapshot cannot"
+    ;; A head-reading drain relies on rows LEAVING the source. With copy they
+    ;; stay, so termination has to come from exhausting a finite snapshot.
+    (let [all   (ids 40)
+          state (run-to-completion!
+                 {:id-source   (src/snapshot-source all)
+                  :relocate-fn (fn [_] {:moved? true :source-kept? true})})]
+      (is (= :completed (:status state)))
+      (is (= 40 (:moved state))))))
+
+(deftest a-snapshot-hands-out-each-id-exactly-once
+  (testing "no id is placed twice, even at concurrency"
+    (let [all     (ids 200)
+          handed  (atom [])
+          _       (run-to-completion!
+                   {:id-source   (src/snapshot-source all)
+                    :relocate-fn (fn [id] (swap! handed conj id) {:moved? true :source-kept? true})})
+          counts  (frequencies @handed)]
+      (is (= 200 (count @handed)))
+      (is (= #{1} (set (vals counts))) "every id handed out exactly once"))))
+
+(deftest copy-reports-failures-without-touching-the-source
+  (testing "a failed copy leaves the row where it was and is named"
+    (let [all    (ids 30)
+          broken (set (take 4 all))
+          left   (atom all)
+          state  (run-to-completion!
+                  {:id-source   (src/snapshot-source all)
+                   :relocate-fn (fn [id]
+                                  (if (broken id)
+                                    {:moved? false :error "embed failed"}
+                                    {:moved? true :source-kept? true}))})]
+      (is (= :completed (:status state)))
+      (is (= 26 (:moved state)))
+      (is (= 4 (:failed state)))
+      (is (= all @left) "nothing left the source, failed or not"))))
+
+;; ============================================================================
 ;; The default port
 ;; ============================================================================
 

@@ -16,7 +16,9 @@
             [hive-milvus.store.entries :as entries]
             [taoensso.timbre :as log]
             [hive-milvus.relocate.plan :as plan]
-            [hive-milvus.relocate.source :as src]))
+            [hive-milvus.relocate.source :as src]
+            [hive-dsl.result :as r]
+            [hive-milvus.relocate.pipeline :as pipeline]))
 
 (def ^:private state
   (atom {:job-id        nil
@@ -195,23 +197,42 @@
              :last-batch-at (cursor/now-iso))
       (checkpoint-cursor! cursor-path))))
 
+(defn- copy-entry!
+  "Copy `id` into its canonical collection, leaving the source row in place.
+   Unwraps the pipeline Result into the raw shape the runner folds."
+  [config-atom id]
+  (let [res (pipeline/copy-one config-atom id)]
+    (if (r/ok? res)
+      (:ok res)
+      {:moved? false
+       :error  (or (:error res) :copy/failed)
+       :id     id})))
+
 (defn start!
   "Spawn a background relocation pass. Returns immediately with the new
    job's metadata, or {:already-running? true} when a previous job is
    still :running.
 
-   Counters are per-run. Rows the pass cannot move (already-canonical
-   no-ops, hard failures) are excluded from subsequent pages so the drain
-   terminates; they are reported, never silently counted as moved.
+   :mode :move (default) removes each row from the source once it has landed in
+   the target, and iterates by re-reading the head of the source.
 
-   Opts: :source-coll :batch-size :cursor-base :concurrency :max-excluded
-         :id-source   (IIdSource, defaults to a Milvus drain over :source-coll)
-         :relocate-fn (id -> result, defaults to entries/relocate-entry!)"
+   :mode :copy leaves every source row where it is. The old collection stays a
+   complete backup. Because nothing is removed, the head would never empty, so
+   the pass enumerates the source's ids up front and works through that snapshot.
+
+   Counters are per-run. Rows the pass cannot place (already-canonical no-ops,
+   hard failures) are excluded from subsequent pages so the run terminates; they
+   are reported, never silently counted as placed.
+
+   Opts: :mode :source-coll :batch-size :cursor-base :concurrency :max-excluded
+         :id-source   (IIdSource, overrides the mode's default source)
+         :relocate-fn (id -> result, overrides the mode's default operation)"
   ([config-atom]
    (start! config-atom {}))
-  ([config-atom {:keys [source-coll batch-size cursor-base concurrency
+  ([config-atom {:keys [mode source-coll batch-size cursor-base concurrency
                         id-source relocate-fn max-excluded]
-                 :or   {source-coll  default-source-collection
+                 :or   {mode         :move
+                        source-coll  default-source-collection
                         batch-size   default-batch-size
                         cursor-base  default-cursor-base
                         concurrency  1
@@ -221,10 +242,17 @@
      (let [job-id      (str "reloc-" (System/currentTimeMillis))
            cursor-path (cursor/cursor-path-for cursor-base source-coll)
            _           (io/make-parents cursor-path)
-           source      (or id-source (src/milvus-drain-source source-coll))
-           relocate    (or relocate-fn #(entries/relocate-entry! config-atom %))]
+           source      (or id-source
+                           (case mode
+                             :copy (src/milvus-snapshot-source source-coll)
+                             :move (src/milvus-drain-source source-coll)))
+           relocate    (or relocate-fn
+                           (case mode
+                             :copy #(copy-entry! config-atom %)
+                             :move #(entries/relocate-entry! config-atom %)))]
        (reset! state {:job-id        job-id
                       :status        :running
+                      :mode          mode
                       :source-coll   source-coll
                       :started-at    (cursor/now-iso)
                       :stopping?     false
@@ -248,6 +276,7 @@
                               :batch-size   batch-size
                               :max-excluded max-excluded}))
        {:job-id       job-id
+        :mode         mode
         :source-coll  source-coll
         :cursor-path  cursor-path
         :source       (src/-describe source)
