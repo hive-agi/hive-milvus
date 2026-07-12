@@ -1,6 +1,6 @@
-;; PROPRIETARY - Copyright 2026 BuddhiLW. All Rights Reserved.
-;; This file is part of hive-milvus and may not be distributed
-;; without explicit written permission.
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: MIT
 
 (ns hive-milvus.relocate.plan
   "Pure decisions for a drain pass: which rows to ask for next, and what a
