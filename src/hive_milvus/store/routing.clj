@@ -105,14 +105,13 @@
     collection-name))
 
 (defn all-known-collections
-  "Return every Milvus collection name we may have written to. Driven by
-   the chroma fan-out list in `embed-svc/type->collection-names` so the
-   two backends stay in sync."
+  "Milvus collections backing the currently configured embedding providers.
+   Derived from `embed-svc/type->collection-names` so reads cover exactly the
+   spaces writes can produce."
   []
   (try
     (->> (embed-svc/type->collection-names nil)
          (map chroma->milvus)
-         (cons base-collection-name)
          distinct
          vec)
     (catch Exception _

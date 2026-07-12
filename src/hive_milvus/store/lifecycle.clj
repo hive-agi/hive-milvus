@@ -59,7 +59,6 @@
                               :keep-alive-timeout-ms     20000
                               :keep-alive-without-calls? true}
                              milvus-config)
-        coll-name     (or (:collection-name config) "hive_mcp_memory")
         max-retries   6
         base-ms       1000
         max-ms        15000
@@ -70,8 +69,6 @@
             (let [result
                   (try
                     (milvus/connect! milvus-config)
-                    (let [dimension (embed-svc/get-dimension-for coll-name)]
-                      (index/ensure-collection! coll-name dimension))
                     (preload-known-collections!)
                     {:success? true
                      :backend  "milvus"

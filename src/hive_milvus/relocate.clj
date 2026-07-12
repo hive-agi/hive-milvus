@@ -1,6 +1,6 @@
-;; PROPRIETARY - Copyright 2026 BuddhiLW. All Rights Reserved.
-;; This file is part of hive-milvus and may not be distributed
-;; without explicit written permission.
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: MIT
 
 (ns hive-milvus.relocate
   "Background re-embedding + relocation of memory entries from
@@ -12,11 +12,13 @@
    once an entry is already in its canonical collection, so resume
    never duplicates."
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]
             [hive-milvus.cursor :as cursor]
             [hive-milvus.store.entries :as entries]
-            [milvus-clj.api :as milvus]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-milvus.relocate.plan :as plan]
+            [hive-milvus.relocate.source :as src]
+            [hive-dsl.result :as r]
+            [hive-milvus.relocate.pipeline :as pipeline]))
 
 (def ^:private state
   (atom {:job-id        nil
@@ -29,9 +31,12 @@
          :skipped       0
          :failed        0
          :failed-ids    []
+         :skipped-ids   []
+         :excluded-ids  #{}
          :last-id       nil
          :last-batch-at nil
          :batch-size    100
+         :max-excluded  nil
          :cursor-path   nil
          :error-message nil}))
 
@@ -45,20 +50,6 @@
 
 (def ^:private default-source-collection "hive_mcp_memory")
 
-(defn- list-ids-batch
-  "Page of ids from `coll` strictly greater than `after-id` (lex ASC).
-   Returns up to `limit` ids sorted ascending so resume is deterministic."
-  [coll after-id limit]
-  (let [filt (if (and after-id (not (str/blank? after-id)))
-               (str "id > \"" after-id "\"")
-               "id != \"\"")
-        rows @(milvus/query-scalar coll
-                {:filter            filt
-                 :limit             limit
-                 :output-fields     ["id"]
-                 :consistency-level :bounded})]
-    (->> rows (mapv :id) sort vec)))
-
 (defn status
   "Return current relocation state snapshot + on-disk cursor."
   []
@@ -66,7 +57,8 @@
         c (when (:cursor-path s)
             (cursor/read-cursor (:cursor-path s)))]
     (-> s
-        (dissoc :cursor-path)
+        (dissoc :cursor-path :excluded-ids)
+        (assoc :excluded-count (count (:excluded-ids s)))
         (assoc :cursor c))))
 
 (defn stop!
@@ -77,6 +69,10 @@
         {:requested-stop? true :was :running})
     {:requested-stop? false :was (:status @state)}))
 
+(defn- capped-conj
+  [xs id]
+  (cond-> xs (< (count xs) failed-ids-cap) (conj id)))
+
 (defn- record-result!
   [acc id result]
   (cond-> (-> acc (update :processed inc) (assoc :last-id id))
@@ -84,26 +80,25 @@
     (update :moved inc)
 
     (and (false? (:moved? result)) (not (:error result)))
-    (update :skipped inc)
+    (-> (update :skipped inc)
+        (update :excluded-ids conj id)
+        (update :skipped-ids capped-conj id))
 
     (:error result)
     (-> (update :failed inc)
-        (update :failed-ids
-                (fn [xs]
-                  (cond-> xs
-                    (< (count xs) failed-ids-cap) (conj id)))))))
+        (update :excluded-ids conj id)
+        (update :failed-ids capped-conj id))))
 
 (defn- run-batch!
   "Process `ids` concurrently with bounded parallelism (per-state
-   :concurrency, default 1). Submits each id to a fixed thread pool,
-   waits for all, then folds results in input order via `record-result!`
-   so `:last-id` semantics are preserved (lex-ASC ids → final last-id
-   is the max id confirmed processed).
+   :concurrency, default 1), folding each outcome into a round summary.
+
+   `relocate-fn` takes an id and returns {:moved? bool} or {:error msg}.
 
    `:stopping?` is checked before each task starts; in-flight tasks
    complete (no mid-flight cancel of Milvus/Venice calls) so we may
    overshoot by up to (concurrency-1) entries before halting."
-  [config-atom ids]
+  [relocate-fn ids]
   (let [conc     (max 1 (or (:concurrency @state) 1))
         executor (java.util.concurrent.Executors/newFixedThreadPool conc)]
     (try
@@ -114,7 +109,7 @@
                                  (fn []
                                    (if (:stopping? @state)
                                      [id ::stopping]
-                                     [id (try (entries/relocate-entry! config-atom id)
+                                     [id (try (relocate-fn id)
                                               (catch Throwable e
                                                 {:moved? false :error (.getMessage e) :id id}))]))))
                       ids)
@@ -124,7 +119,8 @@
             (if (= ::stopping result)
               acc
               (record-result! acc id result)))
-          {:processed 0 :moved 0 :skipped 0 :failed 0 :failed-ids []
+          {:processed 0 :moved 0 :skipped 0 :failed 0
+           :failed-ids [] :skipped-ids [] :excluded-ids #{}
            :last-id   nil}
           pairs))
       (finally
@@ -139,9 +135,15 @@
                (update :moved     + (:moved     batch-result))
                (update :skipped   + (:skipped   batch-result))
                (update :failed    + (:failed    batch-result))
+               (update :excluded-ids into (:excluded-ids batch-result))
                (update :failed-ids
                        (fn [xs]
                          (->> (concat xs (:failed-ids batch-result))
+                              (take failed-ids-cap)
+                              vec)))
+               (update :skipped-ids
+                       (fn [xs]
+                         (->> (concat xs (:skipped-ids batch-result))
                               (take failed-ids-cap)
                               vec)))
                (cond-> (:last-id batch-result)
@@ -161,73 +163,126 @@
   (checkpoint-cursor! cursor-path))
 
 (defn- runner-loop!
-  [config-atom coll cursor-path batch-size]
+  [{:keys [source relocate-fn cursor-path batch-size max-excluded]}]
   (try
-    (loop [last-id (or (:last-id @state) "")]
-      (if (:stopping? @state)
-        (finalize! cursor-path :stopped)
-        (let [ids (list-ids-batch coll last-id batch-size)]
-          (if (empty? ids)
-            (finalize! cursor-path :completed)
-            (let [batch-result (run-batch! config-atom ids)]
-              (merge-batch-into-state! batch-result)
-              (checkpoint-cursor! cursor-path)
-              (log/info "relocate batch done"
-                        {:coll coll :batch-size (count ids)
-                         :moved (:moved batch-result)
-                         :skipped (:skipped batch-result)
-                         :failed (:failed batch-result)
-                         :last-id (:last-id batch-result)})
-              (recur (or (:last-id batch-result) last-id)))))))
+    (loop []
+      (let [{:keys [stopping? excluded-ids]} @state
+            over?  (> (count excluded-ids) max-excluded)
+            ids    (if (or stopping? over?)
+                     []
+                     (src/-next-ids source batch-size excluded-ids))
+            batch  (when (seq ids) (run-batch! relocate-fn ids))
+            _      (when batch
+                     (merge-batch-into-state! batch)
+                     (checkpoint-cursor! cursor-path)
+                     (log/info "relocate batch done"
+                               {:source  (src/-describe source)
+                                :page    (count ids)
+                                :moved   (:moved batch)
+                                :skipped (:skipped batch)
+                                :failed  (:failed batch)}))
+            v      (plan/verdict {:page-count     (count ids)
+                                  :classified     (if batch (:processed batch) 0)
+                                  :excluded-count (count excluded-ids)
+                                  :max-excluded   max-excluded
+                                  :stopping?      (boolean stopping?)})]
+        (if (= :continue v)
+          (recur)
+          (finalize! cursor-path v))))
     (catch Throwable e
-      (log/error e "relocate runner failed for" coll)
+      (log/error e "relocate runner failed")
       (swap! state assoc
              :status        :failed
              :error-message (.getMessage e)
              :last-batch-at (cursor/now-iso))
       (checkpoint-cursor! cursor-path))))
 
+(defn- copy-entry!
+  "Copy `id` into its canonical collection, leaving the source row in place.
+   Unwraps the pipeline Result into the raw shape the runner folds."
+  [config-atom id]
+  (let [res (pipeline/copy-one config-atom id)]
+    (if (r/ok? res)
+      (:ok res)
+      {:moved? false
+       :error  (or (:error res) :copy/failed)
+       :id     id})))
+
 (defn start!
   "Spawn a background relocation pass. Returns immediately with the new
    job's metadata, or {:already-running? true} when a previous job is
-   still :running. Resumes from the on-disk cursor when present."
+   still :running.
+
+   :mode :move (default) removes each row from the source once it has landed in
+   the target, and iterates by re-reading the head of the source.
+
+   :mode :copy leaves every source row where it is. The old collection stays a
+   complete backup. Because nothing is removed, the head would never empty, so
+   the pass enumerates the source's ids up front and works through that snapshot.
+
+   Counters are per-run. Rows the pass cannot place (already-canonical no-ops,
+   hard failures) are excluded from subsequent pages so the run terminates; they
+   are reported, never silently counted as placed.
+
+   Opts: :mode :source-coll :batch-size :cursor-base :concurrency :max-excluded
+         :id-source   (IIdSource, overrides the mode's default source)
+         :relocate-fn (id -> result, overrides the mode's default operation)"
   ([config-atom]
    (start! config-atom {}))
-  ([config-atom {:keys [source-coll batch-size cursor-base concurrency]
-                 :or   {source-coll  default-source-collection
+  ([config-atom {:keys [mode source-coll batch-size cursor-base concurrency
+                        id-source relocate-fn max-excluded]
+                 :or   {mode         :move
+                        source-coll  default-source-collection
                         batch-size   default-batch-size
                         cursor-base  default-cursor-base
-                        concurrency  1}}]
+                        concurrency  1
+                        max-excluded plan/default-max-excluded}}]
    (if (= :running (:status @state))
      {:already-running? true :status (status)}
      (let [job-id      (str "reloc-" (System/currentTimeMillis))
            cursor-path (cursor/cursor-path-for cursor-base source-coll)
            _           (io/make-parents cursor-path)
-           prior       (cursor/read-cursor cursor-path)
-           resume-from (or (:last-id prior) "")]
+           source      (or id-source
+                           (case mode
+                             :copy (src/milvus-snapshot-source source-coll)
+                             :move (src/milvus-drain-source source-coll)))
+           relocate    (or relocate-fn
+                           (case mode
+                             :copy #(copy-entry! config-atom %)
+                             :move #(entries/relocate-entry! config-atom %)))]
        (reset! state {:job-id        job-id
                       :status        :running
+                      :mode          mode
                       :source-coll   source-coll
                       :started-at    (cursor/now-iso)
                       :stopping?     false
-                      :processed     (or (:processed prior) 0)
-                      :moved         (or (:moved     prior) 0)
-                      :skipped       (or (:skipped   prior) 0)
+                      :processed     0
+                      :moved         0
+                      :skipped       0
                       :failed        0
                       :failed-ids    []
-                      :last-id       resume-from
+                      :skipped-ids   []
+                      :excluded-ids  #{}
+                      :last-id       nil
                       :last-batch-at nil
                       :batch-size    batch-size
                       :concurrency   concurrency
+                      :max-excluded  max-excluded
                       :cursor-path   cursor-path
                       :error-message nil})
-       (future (runner-loop! config-atom source-coll cursor-path batch-size))
+       (future (runner-loop! {:source       source
+                              :relocate-fn  relocate
+                              :cursor-path  cursor-path
+                              :batch-size   batch-size
+                              :max-excluded max-excluded}))
        {:job-id       job-id
+        :mode         mode
         :source-coll  source-coll
         :cursor-path  cursor-path
-        :resumed-from resume-from
+        :source       (src/-describe source)
         :batch-size   batch-size
-        :concurrency  concurrency}))))
+        :concurrency  concurrency
+        :max-excluded max-excluded}))))
 
 (defn reset-cursor!
   "Delete the on-disk cursor for a source collection."

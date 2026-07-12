@@ -1,6 +1,6 @@
-;; PROPRIETARY - Copyright 2026 BuddhiLW. All Rights Reserved.
-;; This file is part of hive-milvus and may not be distributed
-;; without explicit written permission.
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: MIT
 
 (ns hive-milvus.embedder
   "BOUNDARY: Re-embed an entry's content via the type-routed embedding
@@ -21,6 +21,7 @@
             [hive-dsl.result :as r]
             [hive-mcp.embeddings.service :as embed-svc]
             [hive-mcp.embeddings.resilient :as resilient]
+            [hive-milvus.collection.naming :as naming]
             [taoensso.timbre :as log]))
 
 (defn- ^String entry->content
@@ -58,18 +59,27 @@
       (when-let [p (resolve-provider entry collection-name)]
         (resilient/resilient-embedder [{:provider p :provider-key :collection-fallback}])))))
 
-(defn embed-for-entry
-  "Re-embed `entry`'s content using the provider that current routing
-   config maps to its :type (or, fallback, to `collection-name`).
+(defn- guard-dim
+  "A vector whose width is not the target collection's is not a degraded
+   answer, it is a wrong one — Milvus would reject it (1804) or, worse, a
+   same-width vector from another model would index as noise. Fail loudly.
+   Empty vectors (blank content) pass: the caller decides what to do with them."
+  [res collection-name entry]
+  (if (and (r/ok? res) (seq (:ok res)))
+    (let [expected (naming/dim-of collection-name)
+          actual   (count (:ok res))]
+      (if (and expected (not= expected actual))
+        (do (log/error "embed-for-entry: dimension mismatch"
+                       {:collection collection-name :expected expected :actual actual})
+            (r/err :embedder/dim-mismatch
+                   {:collection collection-name
+                    :type       (:type entry)
+                    :expected   expected
+                    :actual     actual}))
+        res))
+    res))
 
-   Returns:
-     (r/ok embedding-vec)  on success
-     (r/err :embedder/no-provider {…})       when neither type nor coll resolves
-     (r/err :embedder/embed-failed  {…})     when the embed call throws
-
-   Side-effect: one Ollama / Venice / OpenRouter HTTP call. All other
-   work is pure. Caller passes the resulting vector to
-   `schema/entry->record`."
+(defn- embed-for-entry*
   [entry collection-name]
   (let [content (entry->content entry)]
     (cond
@@ -98,6 +108,24 @@
           (r/err :embedder/no-provider
                  {:type            (:type entry)
                   :collection-name collection-name}))))))
+
+(defn embed-for-entry
+  "Re-embed `entry`'s content using the provider that current routing
+   config maps to its :type (or, fallback, to `collection-name`).
+
+   Returns:
+     (r/ok embedding-vec)  on success
+     (r/err :embedder/no-provider {…})       when neither type nor coll resolves
+     (r/err :embedder/embed-failed  {…})     when the embed call throws
+     (r/err :embedder/dim-mismatch  {…})     when the vector's width is not the
+                                             one `collection-name` holds
+
+   Side-effect: one Ollama / Venice / OpenRouter HTTP call. All other
+   work is pure. Caller passes the resulting vector to
+   `schema/entry->record`."
+  [entry collection-name]
+  (-> (embed-for-entry* entry collection-name)
+      (guard-dim collection-name entry)))
 
 (defn embed-for-entry-or-throw
   "Convenience for legacy call sites that historically expected an

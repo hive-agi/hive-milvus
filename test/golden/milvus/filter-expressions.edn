@@ -1,0 +1,10 @@
+{:type-only "type == \"decision\"",
+ :project-id "project_id == \"hive-mcp\"",
+ :project-ids "project_id in [\"hive-mcp\", \"hive-test\"]",
+ :with-tags "tags like \"%migration%\" and tags like \"%kg%\"",
+ :exclude-tags "not (tags like \"%carto%\")",
+ :with-expiry
+ "type == \"note\" and (expires == \"\" or expires > \"2026-07-12T14:15:06.328692030-03:00[America/Fortaleza]\")",
+ :empty nil,
+ :combined
+ "type == \"decision\" and project_id == \"hive-mcp\" and tags like \"%architecture%\" and not (tags like \"%deprecated%\") and (expires == \"\" or expires > \"2026-07-12T14:15:06.328744146-03:00[America/Fortaleza]\")"}

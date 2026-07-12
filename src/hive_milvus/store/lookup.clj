@@ -1,6 +1,6 @@
-;; PROPRIETARY - Copyright 2026 BuddhiLW. All Rights Reserved.
-;; This file is part of hive-milvus and may not be distributed
-;; without explicit written permission.
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: MIT
 
 (ns hive-milvus.store.lookup
   "Leaf ns for cross-collection id lookup. Extracted out of
@@ -9,21 +9,32 @@
    → entries). No upward dependencies — only `routing` + `query`."
   (:require [hive-milvus.store.query :as query]
             [hive-milvus.store.routing :as routing]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [hive-mcp.embeddings.service :as embed-svc]))
 
 (defn legacy-coll-name
-  "Pinned config collection (legacy single-coll path). Used as a fan-out
-   anchor for type-less reads so users with a custom :collection-name in
-   their config still see their entries during the per-dim transition."
+  "The collection pinned by `:collection-name` in config, or nil when the
+   user has not pinned one."
   [config-atom]
-  (:collection-name @config-atom "hive_mcp_memory"))
+  (:collection-name @config-atom))
+
+(defn- searchable?
+  "True when a configured provider can embed a query into `coll`'s space.
+   Config-only — the store preloads its collections before the embedding
+   registry exists, so this must not build a provider."
+  [coll]
+  (embed-svc/collection-backed? coll))
 
 (defn known-collections
-  "Union of routing/all-known-collections and the legacy-pinned name."
+  "Every collection a type-less read may fan out over: the collections backing
+   the configured embedding providers, plus a pinned `:collection-name` when a
+   provider still backs it. A collection whose provider is no longer configured
+   is not searched."
   [config-atom]
   (->> (cons (legacy-coll-name config-atom) (routing/all-known-collections))
+       (remove nil?)
        distinct
-       vec))
+       (filterv searchable?)))
 
 (defn find-entry-collection
   "Locate which known collection holds `id`. Returns the collection

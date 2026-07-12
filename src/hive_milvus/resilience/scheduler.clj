@@ -35,7 +35,7 @@
   (:import [java.util.concurrent Executors ScheduledExecutorService ThreadFactory TimeUnit]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
-;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; SPDX-License-Identifier: MIT
 
 ;; =============================================================================
 ;; State (Collect) — one atom, mirrors reconnect-state's shape discipline

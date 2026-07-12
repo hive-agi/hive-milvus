@@ -1,0 +1,5 @@
+{:empty-vec "[]",
+ :single "[\"alpha\"]",
+ :multi "[\"alpha\",\"beta\",\"gamma\"]",
+ :with-colon "[\"scope:project:hive\"]",
+ :nil-input ""}

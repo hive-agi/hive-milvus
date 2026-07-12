@@ -11,7 +11,10 @@
             [clojure.string :as str]
             [taoensso.timbre :as log]
             [hive-milvus.relocate.pipeline :as reloc-pipeline]
-            [hive-dsl.result :as r]))
+            [hive-dsl.result :as r]
+            [hive-milvus.store.search.pipeline :as search-pipeline]
+            [hive-milvus.store.search.target :as search-target]
+            [hive-milvus.store.search.boundary :as search-boundary]))
 
 (defn- apply-order-by
   [entries order-by]
@@ -191,38 +194,27 @@
           (cond->> (> (count fan-out) limit) (take limit))
           vec))))
 
+(defn search-context
+  "The live collaborators a semantic search runs against."
+  [config-atom]
+  (search-pipeline/context
+    {:resolver (search-target/default-resolver config-atom)
+     :embedder (search-boundary/collection-embedder)
+     :searcher (search-boundary/milvus-vector-search)}))
+
 (defn search-similar
+  "Semantic search. Returns entries, best first.
+
+   A target that fails is LOGGED, not silently dropped — a search that returns
+   fewer hits because a collection errored used to report success."
   [config-atom query-text opts]
   (resilient config-atom
-    (let [{:keys [limit type project-ids exclude-tags]
-           :or   {limit 10}} opts
-          ;; Vector search must run per-collection — query embedding's
-          ;; dimension must match the collection's schema. With no type
-          ;; opt we fan out, embed once per dim, and concat results
-          ;; ranked by Milvus's per-collection L2 score.
-          colls       (if type
-                        [(:collection-name (routing/coll-for-type type))]
-                        (lookup/known-collections config-atom))
-          filter-expr (schema/build-filter-expr
-                        (cond-> {:include-expired? false}
-                          type         (assoc :type type)
-                          project-ids  (assoc :project-ids project-ids)
-                          exclude-tags (assoc :exclude-tags exclude-tags)))
-          fan-out     (mapcat
-                       (fn [coll-name]
-                         (try
-                           (let [query-vec (embed-svc/embed-for-collection coll-name query-text)]
-                             @(milvus/query coll-name
-                                (cond-> {:vector query-vec :limit limit
-                                         :output-fields schema/default-read-fields}
-                                  filter-expr (assoc :filter filter-expr))))
-                           (catch Exception _ [])))
-                       colls)]
-      (->> fan-out
-           (mapv schema/record->entry)
-           (sort-by :distance)
-           (take limit)
-           vec))))
+    (let [{:keys [results failed searched]}
+          (search-pipeline/search (search-context config-atom)
+                                  (assoc opts :text query-text))]
+      (when (seq failed)
+        (log/warn "search: target(s) failed" {:failed failed :searched searched}))
+      results)))
 
 (defn supports-semantic-search?
   [config-atom]

@@ -1,0 +1,13 @@
+{:tags nil,
+ :content-hash nil,
+ :content "",
+ :updated nil,
+ :helpful-count 0,
+ :type :note,
+ :created nil,
+ :duration :medium,
+ :unhelpful-count 0,
+ :expires nil,
+ :id "minimal-test",
+ :access-count 0,
+ :project-id nil}
