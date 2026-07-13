@@ -167,8 +167,12 @@
 ;; =========================================================================
 
 (defn build-filter-expr
-  "Build a Milvus boolean filter expression from query opts."
-  [{:keys [type project-id project-ids tags exclude-tags include-expired?]}]
+  "Build a Milvus boolean filter expression from query opts.
+   `:created-after` / `:updated-after` (ISO-8601 strings) become server-side
+   range clauses — the predicate applies BEFORE the query limit window, so
+   temporal queries cannot be starved by old entries filling the window."
+  [{:keys [type project-id project-ids tags exclude-tags include-expired?
+           created-after updated-after]}]
   (let [clauses (cond-> []
                   type
                   (conj (str "type == \"" (name type) "\""))
@@ -191,6 +195,12 @@
 
                   (and exclude-tags (seq exclude-tags))
                   (into (map (fn [t] (str "not (tags like \"%" t "%\")")) exclude-tags))
+
+                  created-after
+                  (conj (str "created > \"" created-after "\""))
+
+                  updated-after
+                  (conj (str "updated > \"" updated-after "\""))
 
                   (not include-expired?)
                   (conj (str "(expires == \"\" or expires > \""

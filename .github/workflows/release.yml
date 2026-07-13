@@ -18,14 +18,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read version
+      # A manually-edited VERSION (minor/major bump) wins: if its tag is free
+      # it is used as-is. If VERSION is already tagged, auto-bump the patch
+      # (A.B.X+1) until a free tag is found and commit the bump. The bot push
+      # uses the default GITHUB_TOKEN, which never re-triggers this workflow.
+      - name: Resolve version (auto-bump patch when already tagged)
         id: version
         run: |
-          if [ -f VERSION ]; then
-            VERSION=$(cat VERSION | tr -d '[:space:]')
-          else
+          if [ ! -f VERSION ]; then
             echo "::error::VERSION file not found"
             exit 1
+          fi
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            IFS=. read -r MAJ MIN PAT <<< "${VERSION}"
+            while git rev-parse "v${MAJ}.${MIN}.${PAT}" >/dev/null 2>&1; do
+              PAT=$((PAT + 1))
+            done
+            VERSION="${MAJ}.${MIN}.${PAT}"
+            echo "${VERSION}" > VERSION
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add VERSION
+            git commit -m "release: v${VERSION}"
+            git push origin HEAD:main
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
