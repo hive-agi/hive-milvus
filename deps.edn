@@ -6,7 +6,15 @@
         ;; Milvus Java SDK client wrapper (Clojars)
         io.github.hive-agi/milvus-clj {:mvn/version "0.2.3"}
 
-        ;; hive-mcp protocols (IMemoryStore) — host-integration only.
+        ;; hive-spi — SPI leaf: the IMemoryStore protocol family lives in
+        ;; hive-spi.memory.ports. CORE requires it (store/queue/schema).
+        ;; :local/root for monorepo dev, mirroring hive-mcp; release-prep
+        ;; flips it to a published :mvn/version.
+        io.github.hive-agi/hive-spi {:local/root "../hive-spi"}
+
+        ;; hive-mcp — host-integration ONLY (addon.clj + relocate_addon.clj:
+        ;; store registry, extensions/tools, embedder injection). Excluded from
+        ;; the published core jar; the core no longer depends on it (seam-4).
         io.github.hive-agi/hive-mcp {:git/tag "v0.16.7" :git/sha "0222203"}
 
         ;; IAddon contract leaf. Pin MUST match hive-mcp's so the addon

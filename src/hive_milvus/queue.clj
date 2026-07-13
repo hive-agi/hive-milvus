@@ -18,9 +18,9 @@
    `make-store-dispatch`). Keeping the boundary clean lets circuit,
    store, and queue evolve independently and lets tests exercise the
    queue without standing up Milvus."
-  (:require [hive-mcp.protocols.memory :as proto]
-            [hive-weave.parallel :as parallel]
-            [taoensso.timbre :as log])
+  (:require [hive-weave.parallel :as parallel]
+            [taoensso.timbre :as log]
+            [hive-spi.memory.ports :as proto])
   (:import [clojure.lang PersistentQueue]))
 
 ;; =============================================================================

@@ -4,8 +4,7 @@
    Pure functions only — no side effects, no Milvus RPCs. Extracted from
    hive-milvus.store so the schema/translation layer can be understood
    (and tested) independently of the connection + resilience machinery."
-  (:require [hive-mcp.protocols.memory :as proto]
-            [hive-dsl.result :as r]
+  (:require [hive-dsl.result :as r]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [hive-milvus.embedder :as embedder]
@@ -19,6 +18,13 @@
   "Current ISO 8601 timestamp string."
   []
   (str (java.time.ZonedDateTime/now (java.time.ZoneId/systemDefault))))
+
+(defn- generate-id
+  "Generate a unique timestamped ID for memory entries."
+  []
+  (let [ts  (java.time.LocalDateTime/now)
+        fmt (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss")]
+    (str (.format ts fmt) "-" (format "%08x" (rand-int Integer/MAX_VALUE)))))
 
 (defn staleness-probability
   "Calculate staleness probability from alpha/beta parameters."
@@ -76,7 +82,7 @@
   [entry _collection-name embedding]
   (let [raw-content (or (:content entry) "")
         content     (if (map? raw-content) (json/write-str raw-content) (str raw-content))]
-    {:id              (or (:id entry) (proto/generate-id))
+    {:id              (or (:id entry) (generate-id))
      :embedding       (or embedding [])
      :document        ""
      :type            (or (some-> (:type entry) name) "note")

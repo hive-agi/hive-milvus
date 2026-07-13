@@ -24,9 +24,7 @@
 
    The `defrecord MilvusMemoryStore` + `create-store` live here because
    the protocol methods can't be split across files."
-  (:require [hive-mcp.protocols.memory :as proto]
-            [hive-mcp.protocols.memory-liveness :as liveness]
-            [hive-milvus.resilience.probe :as probe]
+  (:require [hive-milvus.resilience.probe :as probe]
             [hive-milvus.resilience.reconnect :as reconnect]
             [hive-milvus.resilience.retry :as resilience :refer [resilient]]
             [hive-milvus.store.schema :as schema]
@@ -35,7 +33,8 @@
             [hive-milvus.store.entries :as entries]
             [hive-milvus.store.analytics :as analytics]
             [hive-milvus.store.staleness :as staleness]
-            [hive-milvus.store.batch :as batch]))
+            [hive-milvus.store.batch :as batch]
+            [hive-spi.memory.ports :as proto]))
 
 ;; =========================================================================
 ;; Re-exports — preserve hive-milvus.store/* API for the existing test
@@ -159,7 +158,7 @@
 ;; IMemoryStoreLiveness — cross-store resilience seam
 ;; -------------------------------------------------------------------------
 
-(extend-protocol liveness/IMemoryStoreLiveness
+(extend-protocol proto/IMemoryStoreLiveness
   MilvusMemoryStore
   (-probe! [_this]
     ;; Bypass the cache and issue a fresh probe RPC. Returns true/false
@@ -179,17 +178,17 @@
      :port            - Milvus gRPC port (default: 19530)
      :collection-name - Collection name (default: hive_mcp_memory)
 
-   Returns an IMemoryStore implementation.
+   Returns an IMemoryStore implementation. Registering it as the active
+   store is a host concern (see the hive-milvus addon).
 
    Example:
      (def store (create-store {:host \"milvus.milvus.svc\" :port 19530}))
-     (proto/connect! store {:host \"milvus.milvus.svc\" :port 19530})
-     (proto/set-store! store)"
+     (proto/connect! store {:host \"milvus.milvus.svc\" :port 19530})"
   ([]
    (create-store {}))
   ([opts]
    (log/info "Creating MilvusMemoryStore" (when (seq opts) opts))
    (->MilvusMemoryStore (atom (merge {:host "localhost"
-                                       :port 19530
-                                       :collection-name "hive_mcp_memory"}
-                                      opts)))))
+                                      :port 19530
+                                      :collection-name "hive_mcp_memory"}
+                                     opts)))))
