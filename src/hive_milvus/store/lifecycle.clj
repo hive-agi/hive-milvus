@@ -1,6 +1,6 @@
 (ns hive-milvus.store.lifecycle
   "Connection lifecycle helpers for MilvusMemoryStore."
-  (:require [hive-mcp.embeddings.service :as embed-svc]
+  (:require [hive-milvus.embed.port :as port]
             [hive-milvus.collections :as collections]
             [hive-milvus.store.health :as health]
             [hive-milvus.store.index :as index]
@@ -20,20 +20,12 @@
 
 (defn- preload-known-collections!
   "After the legacy 768-d collection is loaded, walk every chroma-style
-   collection name `embed-svc/type->collection-names` knows about and
-   ensure each one is created + loaded + scalar-indexed. Without this
-   the first write to any non-default-dim collection (e.g. the 4096-d
-   collection used by :type/decision) pays the full Milvus
-   `load-collection` cost mid-request, easily exceeding the 30 s
-   memory-write budget and surfacing as a misleading 'memory add timed
-   out' error.
-
-   Each ensure-collection! call is independent + idempotent — a single
-   slow load doesn't block the others, and re-running is cheap because
-   the per-collection memo short-circuits."
+   collection name the embedding port knows about and ensure each one is
+   created + loaded + scalar-indexed. Each ensure-collection! call is
+   independent + idempotent."
   []
   (try
-    (doseq [chroma-name (embed-svc/type->collection-names nil)]
+    (doseq [chroma-name (port/collection-names)]
       (let [milvus-name (collections/collection->milvus-name chroma-name)
             dimension   (dim-from-chroma-name chroma-name)]
         (try

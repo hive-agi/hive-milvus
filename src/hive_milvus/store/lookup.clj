@@ -10,7 +10,7 @@
   (:require [hive-milvus.store.query :as query]
             [hive-milvus.store.routing :as routing]
             [malli.core :as m]
-            [hive-mcp.embeddings.service :as embed-svc]))
+            [hive-milvus.embed.port :as port]))
 
 (defn legacy-coll-name
   "The collection pinned by `:collection-name` in config, or nil when the
@@ -23,7 +23,7 @@
    Config-only — the store preloads its collections before the embedding
    registry exists, so this must not build a provider."
   [coll]
-  (embed-svc/collection-backed? coll))
+  (port/collection-backed? coll))
 
 (defn known-collections
   "Every collection a type-less read may fan out over: the collections backing

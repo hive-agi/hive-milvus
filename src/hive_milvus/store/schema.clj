@@ -5,7 +5,6 @@
    hive-milvus.store so the schema/translation layer can be understood
    (and tested) independently of the connection + resilience machinery."
   (:require [hive-mcp.protocols.memory :as proto]
-            [hive-mcp.embeddings.service :as embed-svc]
             [hive-dsl.result :as r]
             [clojure.data.json :as json]
             [clojure.string :as str]

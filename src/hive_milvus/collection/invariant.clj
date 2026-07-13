@@ -34,7 +34,7 @@
    that reports 'fine' when it means 'I could not tell' is the exact failure
    this file exists to prevent."
   (:require [hive-dsl.result :as r]
-            [hive-mcp.embeddings.service :as embed-svc]
+            [hive-milvus.embed.port :as port]
             [hive-milvus.collection.naming :as naming]
             [taoensso.timbre :as log]))
 
@@ -122,7 +122,7 @@
   (mapv (fn [coll]
           {:collection coll
            :expected   (naming/dim-of coll)
-           :actual     (try (embed-svc/get-dimension-for coll)
+           :actual     (try (port/dimension-for-collection coll)
                             (catch Throwable _ nil))})
         collection-names))
 
@@ -132,7 +132,7 @@
 
    0-arity checks every collection the embedding service has been configured
    with."
-  ([] (verify (keys (embed-svc/list-configured-collections))))
+  ([] (verify (port/configured-collection-names)))
   ([collection-names] (violations (read-dims collection-names))))
 
 (defn verify!
@@ -143,7 +143,7 @@
    Call this from addon init. It does not throw: a violation must be visible
    in the log of a server that is still up (so an operator can read it) rather
    than turn a misconfigured embedder into a boot loop."
-  ([] (verify! (keys (embed-svc/list-configured-collections))))
+  ([] (verify! (port/configured-collection-names)))
   ([collection-names]
    (let [{:keys [ok violations unknown] :as report} (verify collection-names)]
      (doseq [v violations]

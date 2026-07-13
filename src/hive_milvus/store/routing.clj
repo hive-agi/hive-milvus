@@ -1,15 +1,14 @@
 (ns hive-milvus.store.routing
   "Per-type collection routing for Milvus.
 
-   Bridges hive-mcp's type→provider routing (`embed-svc/resolve-provider-for-type`)
-   to Milvus collection naming (underscores, no hyphens). Each provider
-   dimension lives in its own Milvus collection so dual-run migrations
-   (e.g. nomic 768-d → qwen3-embedding:0.6b 1024-d) coexist without
-   schema conflict — Milvus collections have immutable dimension at create
-   time.
+   Bridges the injected embedding port's type→provider routing
+   (`port/routing-for-type`) to Milvus collection naming (underscores,
+   no hyphens). Each provider dimension lives in its own Milvus collection
+   so dual-run migrations (e.g. nomic 768-d → qwen3-embedding:0.6b 1024-d)
+   coexist without schema conflict — Milvus collections have immutable
+   dimension at create time.
 
-   Conventions mirror the Chroma path (`hive-mcp.embeddings.service` +
-   `chroma.crud`):
+   Collection-name conventions:
 
    - Default 768-d collection: `hive_mcp_memory` (legacy name preserved)
    - Per-dim collections:      `hive_mcp_memory_<dim>d`
@@ -17,7 +16,7 @@
    Reads without a type opt fan out across all known collections; writes
    are routed to the entry's type's collection and auto-create on first
    use via `index/ensure-collection!`."
-  (:require [hive-mcp.embeddings.service :as embed-svc]
+  (:require [hive-milvus.embed.port :as port]
             [hive-milvus.collections :as collections]
             [hive-milvus.store.index :as index]
             [taoensso.timbre :as log]))
@@ -42,7 +41,7 @@
   [memory-type]
   (try
     (let [{:keys [collection-name dimension max-tokens provider-key]}
-          (embed-svc/resolve-provider-for-type (or memory-type "note"))]
+          (port/routing-for-type (or memory-type "note"))]
       {:collection-name (chroma->milvus collection-name)
        :dimension       dimension
        :max-tokens      max-tokens
@@ -73,7 +72,7 @@
   [memory-type content]
   (try
     (let [{:keys [collection-name dimension max-tokens provider-key]}
-          (embed-svc/resolve-provider-for-type+size (or memory-type "note") content)]
+          (port/routing-for-type+size (or memory-type "note") content)]
       {:collection-name (chroma->milvus collection-name)
        :dimension       dimension
        :max-tokens      max-tokens
@@ -92,7 +91,7 @@
    their default-provider collection — a zero placeholder vector of that
    dimension is stored by `embed-for-entry`."
   [entry]
-  (if (embed-svc/no-embed-type? (:type entry))
+  (if (port/no-embed-type? (:type entry))
     (coll-for-type (:type entry))
     (coll-for-type+size (:type entry) (entry-content-str entry))))
 
@@ -106,11 +105,11 @@
 
 (defn all-known-collections
   "Milvus collections backing the currently configured embedding providers.
-   Derived from `embed-svc/type->collection-names` so reads cover exactly the
-   spaces writes can produce."
+   Derived from `port/collection-names` so reads cover exactly the spaces
+   writes can produce."
   []
   (try
-    (->> (embed-svc/type->collection-names nil)
+    (->> (port/collection-names)
          (map chroma->milvus)
          distinct
          vec)

@@ -28,11 +28,11 @@
    checker that says 'fine' when it means 'I could not tell' is precisely the
    silent-success pathology this whole suite exists to kill.
 
-   Hermetic — no live Milvus, no live embedder. `embed-svc/get-dimension-for`
-   and `embed-svc/embed-for-collection` are the injected boundaries."
+   Hermetic — no live Milvus, no live embedder. A fake `IEmbedder` installed
+   through `hive-milvus.embed.port` is the injected boundary."
   (:require [clojure.test :refer [deftest is testing]]
             [hive-dsl.result :as r]
-            [hive-mcp.embeddings.service :as embed-svc]
+            [hive-milvus.embed.fake :as fake]
             [hive-milvus.collection.invariant :as inv]
             [hive-milvus.collection.naming :as naming]
             [hive-milvus.store.search.boundary :as b]
@@ -59,7 +59,7 @@
 ;; =============================================================================
 
 (deftest startup-check-passes-when-the-widths-agree
-  (with-redefs [embed-svc/get-dimension-for (constantly 2560)]
+  (fake/with-embedder {:dimension-for-collection (constantly 2560)}
     (let [report (inv/verify [mem-2560])]
       (is (inv/satisfied? report))
       (is (= [{:collection mem-2560 :dim 2560}] (:ok report)))
@@ -69,7 +69,7 @@
   (testing "the 768-d embedder against the 2560-d collection — the live
             misconfiguration. It must be reported by name at boot, with both
             widths, under the SAME tag the per-call guards use."
-    (with-redefs [embed-svc/get-dimension-for (constantly 768)]
+    (fake/with-embedder {:dimension-for-collection (constantly 768)}
       (let [report (inv/verify [mem-2560])
             [v]    (:violations report)]
         (is (not (inv/satisfied? report))
@@ -82,7 +82,7 @@
 
 (deftest an-unreadable-width-is-reported-as-unknown-never-as-ok
   (testing "a collection whose width the name does not encode"
-    (with-redefs [embed-svc/get-dimension-for (constantly 2560)]
+    (fake/with-embedder {:dimension-for-collection (constantly 2560)}
       (let [report (inv/verify [carto])]
         (is (empty? (:ok report))
             "an unverifiable collection must NOT be counted as verified")
@@ -90,7 +90,7 @@
         (is (inv/satisfied? report)
             "unverifiable is not the same as violated — it must not block boot"))))
   (testing "a collection with no resolvable embedder is unknown, not skipped"
-    (with-redefs [embed-svc/get-dimension-for (fn [_] (throw (ex-info "no provider" {})))]
+    (fake/with-embedder {:dimension-for-collection (fn [_] (throw (ex-info "no provider" {})))}
       (let [report (inv/verify [mem-2560])]
         (is (empty? (:ok report)))
         (is (= [:dim/embedder-absent] (mapv :error (:unknown report))))))))
@@ -98,8 +98,7 @@
 (deftest one-broken-collection-does-not-hide-behind-the-healthy-ones
   (testing "the report must be per-collection — a single aggregate boolean would
             let a good collection mask a bad one"
-    (with-redefs [embed-svc/get-dimension-for
-                  (fn [c] (if (= c mem-2560) 768 768))]
+    (fake/with-embedder {:dimension-for-collection (fn [c] (if (= c mem-2560) 768 768))}
       (let [report (inv/verify [mem-768 mem-2560 carto])]
         (is (= [mem-768]  (mapv :collection (:ok report))))
         (is (= [mem-2560] (mapv :collection (:violations report))))
@@ -114,7 +113,7 @@
   (testing "the read path must return an error, NOT neighbours. Neighbours from
             a space the query was never embedded into are indistinguishable from
             an answer — that is the whole outage in one sentence."
-    (with-redefs [embed-svc/embed-for-collection (fn [_ _] (vec (repeat 768 0.1)))]
+    (fake/with-embedder {:embed-text (fn [_ _] (vec (repeat 768 0.1)))}
       (let [res (b/-embed (b/collection-embedder) (tgt/->target mem-2560 :new) "q")]
         (is (r/err? res))
         (is (= :embedder/dim-mismatch (:error res)))
@@ -123,7 +122,7 @@
 
 (deftest a-right-width-query-vector-is-served
   (testing "the guard must not be a blanket refusal — a correct embedder works"
-    (with-redefs [embed-svc/embed-for-collection (fn [_ _] (vec (repeat 2560 0.1)))]
+    (fake/with-embedder {:embed-text (fn [_ _] (vec (repeat 2560 0.1)))}
       (let [res (b/-embed (b/collection-embedder) (tgt/->target mem-2560 :new) "q")]
         (is (r/ok? res))
         (is (= 2560 (count (:ok res))))))))
@@ -135,8 +134,8 @@
 (deftest startup-and-per-call-name-the-same-fault
   (testing "one fault, one keyword. If these ever diverge, an operator reading
             the boot log cannot connect it to the errors the queries return."
-    (with-redefs [embed-svc/get-dimension-for    (constantly 768)
-                  embed-svc/embed-for-collection (fn [_ _] (vec (repeat 768 0.1)))]
+    (fake/with-embedder {:dimension-for-collection (constantly 768)
+                         :embed-text (fn [_ _] (vec (repeat 768 0.1)))}
       (let [boot  (first (:violations (inv/verify [mem-2560])))
             query (b/-embed (b/collection-embedder) (tgt/->target mem-2560 :new) "q")]
         (is (= (:error boot) (:error query) :embedder/dim-mismatch))

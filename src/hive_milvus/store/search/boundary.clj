@@ -6,7 +6,7 @@
   "The effects a search performs: embedding the query, and asking a collection
    for its nearest rows. Both are ports; both return Result."
   (:require [hive-dsl.result :as r]
-            [hive-mcp.embeddings.service :as embed-svc]
+            [hive-milvus.embed.port :as port]
             [hive-milvus.collection.naming :as naming]
             [hive-milvus.store.schema :as schema]
             [milvus-clj.api :as milvus]
@@ -52,7 +52,7 @@
   IQueryEmbedder
   (-embed [_ target text]
     (r/let-ok [query-vec (r/try-effect* :search/embed-failed
-                           (embed-svc/embed-for-collection (:collection target) text))]
+                           (port/embed-text (:collection target) text))]
       ;; A vector of the wrong width is not a degraded answer, it is a wrong one:
       ;; fail loudly rather than search a space we were not embedded into.
       (let [expected (naming/dim-of (:collection target))

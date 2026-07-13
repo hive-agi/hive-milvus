@@ -1,12 +1,10 @@
 (ns hive-milvus.store
   "Milvus implementation of IMemoryStore protocol.
 
-   Standalone addon project — hive-mcp depends on this via IAddon,
-   never the reverse. Wraps milvus-clj.api into protocol methods.
+   Standalone addon project. Wraps milvus-clj.api into protocol methods.
 
-   Key difference from Chroma: Milvus requires explicit embeddings on
-   insert and search. We use hive-mcp.embeddings.service to generate
-   them — the same provider chain as Chroma.
+   Milvus requires explicit embeddings on insert and search; those are
+   produced through the injected `hive-milvus.embed.port` boundary.
 
    DDD: Repository pattern — MilvusMemoryStore is the Milvus aggregate adapter.
 

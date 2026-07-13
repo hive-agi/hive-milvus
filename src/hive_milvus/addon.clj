@@ -23,7 +23,8 @@
             [hive-milvus.store :as store]
             [hive-dsl.result :as r]
             [taoensso.timbre :as log]
-            [hive-milvus.relocate-addon :as reloc-addon]))
+            [hive-milvus.relocate-addon :as reloc-addon]
+            [hive-milvus.embed.adapter :as embed-adapter]))
 
 (defrecord MilvusAddon [store-atom]
   addon-proto/IAddon
@@ -33,7 +34,7 @@
   (addon-type [_this] :native)
 
   (capabilities [_this]
-    #{:vector-search :health-reporting})
+    #{:memory-store :vector-search :health-reporting})
 
   (initialize! [_this addon-config]
     (try
@@ -46,46 +47,50 @@
             {:success? false
              :errors (or (seq errs) [(pr-str resolution)])
              :metadata {:backend "milvus"}})
-          (let [resolved      (:ok resolution)
-                store-config  (select-keys resolved [:host :port :collection-name
-                                                     :token :database :secure
-                                                     :transport])
-                store         (store/create-store store-config)
-                connect-res   (mem-proto/connect! store resolved)]
-            (if (:success? connect-res)
-              (do
-                (reset! store-atom store)
-                (mem-proto/set-store! store)
-                ;; Contribute relocate-* commands to the consolidated
-                ;; `memory` MCP tool. Idempotent — safe across reloads.
-                (try (reloc-addon/install!)
-                     (catch Throwable e
-                       (log/warn "Relocate addon install! failed (non-fatal):"
-                                 (.getMessage e))))
-                (log/info "MilvusAddon initialized — set as active memory store"
-                          {:host      (:host resolved)
-                           :port      (:port resolved)
-                           :transport (:transport resolved)})
-                {:success? true :errors [] :metadata {:backend "milvus"}})
-              {:success? false
-               :errors (:errors connect-res)
-               :metadata {:backend "milvus"}}))))
+          (let [resolved (:ok resolution)
+                store-config (select-keys resolved [:host :port :collection-name
+                                                    :token :database :secure
+                                                    :transport])]
+            (embed-adapter/install!)
+            (let [store (store/create-store store-config)
+                  connect-res (mem-proto/connect! store resolved)]
+              (if (:success? connect-res)
+                (do
+                  (reset! store-atom store)
+                  (mem-proto/set-store! store)
+                  (try
+                    (reloc-addon/install!)
+                    (catch Throwable e
+                      (log/warn "Relocate addon install! failed (non-fatal):"
+                                (.getMessage e))))
+                  (log/info "MilvusAddon initialized — set as active memory store"
+                            {:host (:host resolved)
+                             :port (:port resolved)
+                             :transport (:transport resolved)})
+                  {:success? true :errors [] :metadata {:backend "milvus"}})
+                (do
+                  (embed-adapter/uninstall!)
+                  {:success? false
+                   :errors (:errors connect-res)
+                   :metadata {:backend "milvus"}}))))))
       (catch Exception e
+        (embed-adapter/uninstall!)
         {:success? false
          :errors [(.getMessage e)]
          :metadata {:backend "milvus"}})))
 
   (shutdown! [_this]
     (when-let [store @store-atom]
-      (mem-proto/disconnect! store)
+      (if (identical? store (:default (mem-proto/registered-stores)))
+        (mem-proto/reset-active-store!)
+        (mem-proto/disconnect! store))
       (reset! store-atom nil)
-      ;; Retract relocate-* commands so a fresh init re-contributes
-      ;; cleanly.
-      (try (reloc-addon/uninstall!)
-           (catch Throwable e
-             (log/debug "Relocate addon uninstall! failed (non-fatal):"
-                        (.getMessage e))))
-      (log/info "MilvusAddon shut down"))
+      (try
+        (reloc-addon/uninstall!)
+        (catch Throwable e
+          (log/debug "Relocate addon uninstall! failed (non-fatal):"
+                     (.getMessage e)))))
+    (embed-adapter/uninstall!)
     nil)
 
   (tools [_this] [])
@@ -95,7 +100,7 @@
   (health [_this]
     (if-let [store @store-atom]
       (let [h (mem-proto/health-check store)]
-        {:status  (if (:healthy? h) :ok :down)
+        {:status (if (:healthy? h) :ok :down)
          :details h})
       {:status :down
        :details {:reason "not initialized"}}))

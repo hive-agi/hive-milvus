@@ -8,7 +8,7 @@
    search pipeline's contract is a DISTANCE (lower = better). The boundary is
    the one place that conversion may happen."
   (:require [clojure.test :refer [deftest testing is]]
-            [hive-mcp.embeddings.service :as embed-svc]
+            [hive-milvus.embed.fake :as fake]
             [hive-milvus.store.search.boundary :as b]
             [hive-milvus.store.search.pipeline :as pipeline]
             [hive-milvus.store.search.target :as tgt]
@@ -93,7 +93,7 @@
 ;; ============================================================================
 
 (deftest a-query-vector-of-the-wrong-width-is-a-hard-error
-  (with-redefs [embed-svc/embed-for-collection (fn [_coll _text] (vec (repeat 768 0.1)))]
+  (fake/with-embedder {:embed-text (fn [_coll _text] (vec (repeat 768 0.1)))}
     (let [res (b/-embed (b/collection-embedder) (tgt/->target coll :new) "q")]
       (is (not (contains? res :ok)))
       (is (= :embedder/dim-mismatch (:error res)))
@@ -101,6 +101,6 @@
       (is (= 768 (:actual res))))))
 
 (deftest a-query-vector-of-the-right-width-passes
-  (with-redefs [embed-svc/embed-for-collection (fn [_coll _text] (vec (repeat 2560 0.1)))]
+  (fake/with-embedder {:embed-text (fn [_coll _text] (vec (repeat 2560 0.1)))}
     (let [res (b/-embed (b/collection-embedder) (tgt/->target coll :new) "q")]
       (is (= 2560 (count (:ok res)))))))

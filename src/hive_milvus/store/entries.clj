@@ -1,6 +1,6 @@
 (ns hive-milvus.store.entries
   "Core entry CRUD, query, search, expiry, and status helpers."
-  (:require [hive-mcp.embeddings.service :as embed-svc]
+  (:require [hive-milvus.embed.port :as port]
             [hive-milvus.resilience.retry :refer [resilient]]
             [hive-milvus.store.index :as index]
             [hive-milvus.store.lookup :as lookup]
@@ -14,7 +14,8 @@
             [hive-dsl.result :as r]
             [hive-milvus.store.search.pipeline :as search-pipeline]
             [hive-milvus.store.search.target :as search-target]
-            [hive-milvus.store.search.boundary :as search-boundary]))
+            [hive-milvus.store.search.boundary :as search-boundary]
+            [malli.core :as m]))
 
 (defn- apply-order-by
   [entries order-by]
@@ -216,10 +217,7 @@
         (log/warn "search: target(s) failed" {:failed failed :searched searched}))
       results)))
 
-(defn supports-semantic-search?
-  [config-atom]
-  ;; A provider for any known collection means semantic search is wired.
-  (some embed-svc/provider-available-for? (lookup/known-collections config-atom)))
+(defn supports-semantic-search? [config-atom] (boolean (some port/provider-available-for? (lookup/known-collections config-atom))))
 
 (defn cleanup-expired!
   [config-atom]
@@ -283,27 +281,66 @@
                 (catch Exception _ nil)))
             colls))))
 
+(def CollectionCount
+  [:map
+   [:collection :string]
+   [:count [:int {:min 0}]]])
+
+(def CollectionCountFailure
+  [:map
+   [:collection :string]
+   [:error :string]])
+
+(def StoreStatus
+  [:map
+   [:backend [:= "milvus"]]
+   [:configured? :boolean]
+   [:entry-count [:maybe [:int {:min 0}]]]
+   [:collections [:map-of :string [:int {:min 0}]]]
+   [:errors [:vector CollectionCountFailure]]
+   [:supports-search? :boolean]])
+
+(defn- collection-count
+  [collection-name]
+  (let [row (first @(milvus/query-scalar
+                     collection-name
+                     {:filter "id != \"\""
+                      :output-fields ["count(*)"]
+                      :limit 1}))
+        n (:count(*) row)]
+    (if (nat-int? n)
+      n
+      (throw (ex-info "Milvus count aggregation returned no count"
+                      {:type :milvus/count-unavailable
+                       :collection collection-name
+                       :row row})))))
+
+(m/=> collection-count [:=> [:cat :string] [:int {:min 0}]])
+
+(defn- collect-count
+  [collection-name]
+  (try
+    {:collection collection-name
+     :count (collection-count collection-name)}
+    (catch Exception e
+      {:collection collection-name
+       :error (or (ex-message e) (str (class e)))})))
+
 (defn store-status
   [config-atom]
   (resilient config-atom
-    (let [coll-counts
-          (reduce
-           (fn [acc coll-name]
-             (try
-               (let [n (count @(milvus/query-scalar coll-name
-                                 {:filter "id != \"\""
-                                  :output-fields ["id"]
-                                  :limit 100000}))]
-                 (assoc acc coll-name n))
-               (catch Exception _ acc)))
-           {}
-           (lookup/known-collections config-atom))]
-      {:backend          "milvus"
-       :configured?      (milvus/connected?)
-       :entry-count      (try (reduce + 0 (vals coll-counts))
-                              (catch Exception _ nil))
-       :collections      coll-counts
-       :supports-search? (milvus/connected?)})))
+    (let [outcomes (mapv collect-count (lookup/known-collections config-atom))
+          errors (into [] (keep #(when (:error %) (select-keys % [:collection :error]))) outcomes)
+          coll-counts (into {} (keep #(when-let [n (:count %)] [(:collection %) n])) outcomes)]
+      {:backend "milvus"
+       :configured? (boolean (milvus/connected?))
+       :entry-count (when (empty? errors) (reduce + 0 (vals coll-counts)))
+       :collections coll-counts
+       :errors errors
+       :supports-search? (and (boolean (milvus/connected?))
+                              (supports-semantic-search? config-atom))})))
+
+(m/=> store-status [:=> [:cat :any] StoreStatus])
 
 (defn reset-store!
   [config-atom]
