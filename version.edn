@@ -1,0 +1,9 @@
+{:lib      io.github.hive-agi/hive-milvus
+ :minor    4
+ :license  {:name "MIT" :url "https://opensource.org/licenses/MIT"}
+ :scm-url  "https://github.com/hive-agi/hive-milvus"
+ :src-dirs ["src" "resources"]
+ :jar-excludes ["hive_milvus/addon.clj"
+                "hive_milvus/relocate_addon.clj"
+                "hive_milvus/embed/adapter.clj"
+                "META-INF/hive-addons/milvus.edn"]}

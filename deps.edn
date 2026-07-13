@@ -6,9 +6,12 @@
         ;; Milvus Java SDK client wrapper (Clojars)
         io.github.hive-agi/milvus-clj {:mvn/version "0.2.3"}
 
-        ;; hive-mcp protocols (IMemoryStore, IAddon)
-        ;; Only the protocol interfaces — no concrete implementations
+        ;; hive-mcp protocols (IMemoryStore) — host-integration only.
         io.github.hive-agi/hive-mcp {:git/tag "v0.16.7" :git/sha "0222203"}
+
+        ;; IAddon contract leaf. Pin MUST match hive-mcp's so the addon
+        ;; record satisfies the same protocol object the host registry uses.
+        io.github.hive-agi/hive-addon {:git/tag "v0.1.0" :git/sha "89e299f"}
 
         ;; Config DI — typed env var resolution with ADT backing
         io.github.hive-agi/hive-di {:git/tag "v0.3.1" :git/sha "ab63fd0"}
@@ -57,4 +60,10 @@
                       org.clojure/test.check      {:mvn/version "1.1.1"}
                       io.github.hive-agi/hive-test {:git/tag "v0.3.0" :git/sha "763e4bc"}
                       io.github.hive-agi/hive-schemas {:mvn/version "0.1.1"}}
-         :main-opts ["-m" "kaocha.runner"]}}}
+         :main-opts ["-m" "kaocha.runner"]}
+
+  ;; Clojars publishing. `clojure -T:build <jar|install|deploy>`. Version =
+  ;; VERSION file; :jar-ignores in version.edn excludes host-integration nses.
+  :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.9"}
+                 slipset/deps-deploy {:mvn/version "0.2.2"}}
+          :ns-default build}}}

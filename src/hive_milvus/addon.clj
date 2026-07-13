@@ -17,7 +17,7 @@
      (addons/register-addon! (milvus-addon/create-addon))
      (addons/init-addon! \"hive.milvus\"
        {:host \"milvus.milvus.svc\" :port 19530})"
-  (:require [hive-mcp.addons.protocol :as addon-proto]
+  (:require [hive-addon.protocol :as addon-proto]
             [hive-mcp.protocols.memory :as mem-proto]
             [hive-milvus.config :as config]
             [hive-milvus.store :as store]
