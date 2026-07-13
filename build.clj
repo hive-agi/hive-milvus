@@ -28,9 +28,16 @@
 (def ^:private class-dir "target/classes")
 (def ^:private src-dirs (:src-dirs cfg ["src"]))
 (def ^:private jar-excludes (:jar-excludes cfg []))
+(def ^:private pom-exclude-deps (set (:pom-exclude-deps cfg [])))
 (def ^:private jar-file (format "target/%s-%s.jar" (name lib) version))
 
-(defn- basis [] (b/create-basis {:project "deps.edn"}))
+(defn- basis
+  "Project basis for the POM, minus `:pom-exclude-deps` (integration-only libs
+   whose namespaces are jar-excluded)."
+  []
+  (let [proj (edn/read-string (slurp "deps.edn"))
+        core (apply dissoc (:deps proj) pom-exclude-deps)]
+    (b/create-basis {:project (assoc proj :deps core)})))
 
 (defn- write-pom []
   (b/write-pom

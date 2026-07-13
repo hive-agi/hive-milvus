@@ -6,4 +6,9 @@
  :jar-excludes ["hive_milvus/addon.clj"
                 "hive_milvus/relocate_addon.clj"
                 "hive_milvus/embed/adapter.clj"
-                "META-INF/hive-addons/milvus.edn"]}
+                "META-INF/hive-addons/milvus.edn"]
+ ;; Integration-only libs whose namespaces are jar-excluded — dropped from the
+ ;; published core POM (kept in deps.edn for monorepo/addon dev).
+ :pom-exclude-deps [io.github.hive-agi/hive-mcp
+                    io.github.hive-agi/hive-addon
+                    io.github.hive-agi/hive-help]}

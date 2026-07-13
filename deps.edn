@@ -8,9 +8,7 @@
 
         ;; hive-spi — SPI leaf: the IMemoryStore protocol family lives in
         ;; hive-spi.memory.ports. CORE requires it (store/queue/schema).
-        ;; :local/root for monorepo dev, mirroring hive-mcp; release-prep
-        ;; flips it to a published :mvn/version.
-        io.github.hive-agi/hive-spi {:local/root "../hive-spi"}
+        io.github.hive-agi/hive-spi {:mvn/version "0.1.2"}
 
         ;; hive-mcp — host-integration ONLY (addon.clj + relocate_addon.clj:
         ;; store registry, extensions/tools, embedder injection). Excluded from
@@ -22,10 +20,10 @@
         io.github.hive-agi/hive-addon {:git/tag "v0.1.0" :git/sha "89e299f"}
 
         ;; Config DI — typed env var resolution with ADT backing
-        io.github.hive-agi/hive-di {:git/tag "v0.3.1" :git/sha "ab63fd0"}
+        io.github.hive-agi/hive-di {:mvn/version "0.3.1"}
 
         ;; Bounded parallelism — queue drain uses hive-weave.parallel/bounded-pmap
-        io.github.hive-agi/hive-weave {:git/tag "v0.2.5" :git/sha "5895a2a"}
+        io.github.hive-agi/hive-weave {:mvn/version "0.2.5"}
 
         ;; Pure helpers for actionable error/help messages
         ;; (transitive: hive-mcp.embeddings.routing requires hive-help.core)
@@ -33,18 +31,17 @@
 
         ;; CPPB pattern macros (Collect → Promote → Pipeline → Boundary).
         ;; Used by hive-milvus.relocate.* — standalone Apache 2.0 lib.
-        io.github.hive-agi/hive-cppb
-        {:git/tag "v0.1.0" :git/sha "a3a06e1"}
+        io.github.hive-agi/hive-cppb {:mvn/version "0.1.0"}
 
         ;; Clock facade — domain code MUST NOT call System/currentTimeMillis
         ;; directly; route through hive-ttracking.clock so tests can pin
         ;; time deterministically. Used by resilience.probe + reconnect.
-        io.github.hive-agi/hive-ttracking {:git/tag "v0.1.4" :git/sha "51fd09d"}
+        io.github.hive-agi/hive-ttracking {:mvn/version "0.1.4"}
 
         ;; Result/Railway DSL + try-effect/rescue sugar.
         ;; Already transitive via hive-cppb/hive-weave but pinned explicit
         ;; here so resilience.* doesn't depend on transitive resolution.
-        io.github.hive-agi/hive-dsl {:git/tag "v0.5.2" :git/sha "8d9760c"}}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.2"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]
