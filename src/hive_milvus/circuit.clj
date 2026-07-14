@@ -26,7 +26,8 @@
    so tests can pin time deterministically — never call
    `System/currentTimeMillis` directly."
   (:require [hive-ttracking.clock :as clock]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [malli.core :as m]))
 
 ;; =========================================================================
 ;; State
@@ -189,3 +190,56 @@
   []
   (reset! breaker-state default-state)
   nil)
+
+(def BreakerStateKw
+  "Breaker state keyword ADT."
+  [:enum :closed :open :half-open])
+
+(def BreakerState
+  "Breaker state map held by the internal atom and returned by `state`."
+  [:map
+   [:state BreakerStateKw]
+   [:failures nat-int?]
+   [:opened-at [:maybe :int]]
+   [:threshold pos-int?]
+   [:cooldown-ms pos-int?]])
+
+(def BreakerConfig
+  "Tunables accepted by `configure!`; nil-valued keys are ignored."
+  [:map
+   [:threshold {:optional true} [:maybe pos-int?]]
+   [:cooldown-ms {:optional true} [:maybe pos-int?]]])
+
+(def CircuitOpenFail
+  "Fail map returned by `check` while the breaker is :open and cooling down."
+  [:map
+   [:success? [:= false]]
+   [:error [:= :circuit-open]]
+   [:retry-after nat-int?]
+   [:reconnecting? [:= true]]])
+
+(def Listener
+  "0-arity callback invoked on every transition to :closed."
+  [:=> [:cat] :any])
+
+(m/=> configure! [:=> [:cat BreakerConfig] :nil])
+
+(m/=> state [:=> [:cat] BreakerState])
+
+(m/=> open? [:=> [:cat] :boolean])
+
+(m/=> closed? [:=> [:cat] :boolean])
+
+(m/=> half-open? [:=> [:cat] :boolean])
+
+(m/=> subscribe! [:=> [:cat Listener] Listener])
+
+(m/=> unsubscribe! [:=> [:cat Listener] Listener])
+
+(m/=> check [:=> [:cat] [:maybe CircuitOpenFail]])
+
+(m/=> record-failure! [:=> [:cat] :nil])
+
+(m/=> record-success! [:=> [:cat] :nil])
+
+(m/=> force-reset! [:=> [:cat] :nil])

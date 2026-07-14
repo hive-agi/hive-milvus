@@ -1,0 +1,8 @@
+{:wrote-id
+ {:success? false,
+  :errors
+  ["clojure.lang.ExceptionInfo: Milvus HTTP /v2/vectordb/collections/has IO failure:  {:milvus-clj.client/transport :http, :path \"/v2/vectordb/collections/has\", :cause :io}"],
+  :reconnecting? true},
+ :read-back? false,
+ :type-match? false,
+ :tags-match? false}

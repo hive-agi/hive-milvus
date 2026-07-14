@@ -1,0 +1,10 @@
+{:result {:success? true
+          :errors []
+          :metadata {:backend "milvus"}}
+ :events [:embed-installed
+          :store-created
+          :connected
+          :store-set
+          :relocate-installed]
+ :store-installed? true
+ :capabilities #{:memory-store :vector-search :health-reporting}}

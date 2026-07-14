@@ -19,7 +19,8 @@
    through `hive-ttracking.clock/now-millis` so tests can pin time."
   (:require [hive-dsl.result :as r]
             [milvus-clj.api :as milvus]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [malli.core :as m]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: MIT
@@ -55,3 +56,15 @@
     (let [r (alive?)]
       (when r (log/debug "milvus probe: alive"))
       r)))
+
+(def ProbeCache
+  "Probe-cache snapshot: `:ts` epoch millis of last probe, `:alive?` cached verdict."
+  [:map
+   [:ts :int]
+   [:alive? :boolean]])
+
+(m/=> alive? [:=> [:cat] :boolean])
+
+(m/=> invalidate! [:=> [:cat] ProbeCache])
+
+(m/=> probe-once! [:=> [:cat] :boolean])

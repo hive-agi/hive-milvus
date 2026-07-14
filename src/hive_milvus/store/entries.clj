@@ -307,7 +307,7 @@
                      {:filter "id != \"\""
                       :output-fields ["count(*)"]
                       :limit 1}))
-        n (:count(*) row)]
+        n (get row (keyword "count(*)"))]
     (if (nat-int? n)
       n
       (throw (ex-info "Milvus count aggregation returned no count"

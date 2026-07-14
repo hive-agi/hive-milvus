@@ -24,7 +24,8 @@
             [hive-milvus.failure :as failure]
             [hive-milvus.resilience.probe :as probe]
             [hive-milvus.resilience.reconnect :as reconnect]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [malli.core :as m]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: MIT
@@ -176,3 +177,49 @@
      (hive-milvus.resilience.retry/ensure-live! ~config-atom)
      (hive-milvus.resilience.retry/with-auto-reconnect
        ~config-atom (fn [] ~@body))))
+
+(def ConfigAtom
+  "Milvus client config atom, passed through to the reconnect Boundary."
+  [:fn #(instance? clojure.lang.IAtom %)])
+
+(def Thunk
+  "Zero-argument callable wrapping one Milvus RPC."
+  [:=> [:cat] :any])
+
+(def MilvusFailure
+  "hive-milvus.failure ADT value: closed sum of Milvus failure modes."
+  [:map {:closed true}
+   [:adt/type [:= :MilvusFailure]]
+   [:adt/variant [:enum :milvus/transient :milvus/fatal :milvus/reconnect-timeout]]
+   [:message :string]])
+
+(def OkResult
+  "hive-dsl.result success Result carrying the RPC return value."
+  [:map [:ok :any]])
+
+(def RawCallError
+  "Unclassified failure Result carrying the live Throwable."
+  [:map
+   [:error [:= :milvus/call]]
+   [:throwable [:fn #(instance? Throwable %)]]])
+
+(def FailureError
+  "Classified failure Result carrying a MilvusFailure ADT value."
+  [:map
+   [:error [:= :milvus/failure]]
+   [:failure MilvusFailure]])
+
+(m/=> attempt-call [:=> [:cat Thunk] [:or OkResult RawCallError]])
+
+(m/=> classify-err [:=> [:cat RawCallError] FailureError])
+
+(m/=> retry-once
+      [:=> [:cat ConfigAtom Thunk pos-int?]
+       [:=> [:cat FailureError] [:or OkResult FailureError]]])
+
+(m/=> with-auto-reconnect
+      [:function
+       [:=> [:cat ConfigAtom Thunk] :any]
+       [:=> [:cat ConfigAtom Thunk pos-int?] :any]])
+
+(m/=> ensure-live! [:=> [:cat ConfigAtom] :boolean])
