@@ -19,7 +19,8 @@
             [hive-milvus.resilience.probe :as probe]
             [hive-ttracking.clock :as clock]
             [milvus-clj.api :as milvus]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [malli.core :as m]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: MIT
@@ -140,3 +141,26 @@
    reconnect after the operator deliberately closed the store."
   []
   (swap! reconnect-state assoc :running? false))
+
+(def ConfigAtom
+  "Atom holding the milvus connection config map (:transport :host :port
+   :token :database :secure; open)."
+  [:fn #(instance? clojure.lang.IAtom %)])
+
+(def ReconnectState
+  "Value shape of the `reconnect-state` atom."
+  [:map {:closed true}
+   [:running? :boolean]
+   [:future [:maybe [:fn #(instance? java.util.concurrent.Future %)]]]
+   [:last-attempt [:maybe :int]]
+   [:attempt {:optional true} nat-int?]])
+
+(m/=> start-loop!
+  [:=> [:cat ConfigAtom [:* [:cat [:enum :base-ms :max-ms] pos-int?]]]
+   [:maybe ReconnectState]])
+
+(m/=> await! [:=> [:cat nat-int?] :boolean])
+
+(m/=> kick! [:=> [:cat ConfigAtom] [:maybe ReconnectState]])
+
+(m/=> stop! [:=> [:cat] ReconnectState])

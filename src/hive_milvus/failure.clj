@@ -149,3 +149,31 @@
    [:message :string]])
 
 (m/=> classify [:=> [:cat [:fn #(instance? Throwable %)]] MilvusFailureSchema])
+
+(def AnyMilvusFailureSchema
+  "Runtime shape of any MilvusFailure ADT value, covering all three variants."
+  [:map {:closed false}
+   [:adt/type [:= :MilvusFailure]]
+   [:adt/variant [:enum :milvus/transient :milvus/fatal :milvus/reconnect-timeout]]
+   [:message :string]])
+
+(def ReconnectTimeoutFailureSchema
+  "Runtime shape of the :milvus/reconnect-timeout MilvusFailure variant."
+  [:map {:closed false}
+   [:adt/type [:= :MilvusFailure]]
+   [:adt/variant [:= :milvus/reconnect-timeout]]
+   [:message :string]])
+
+(def LegacyFailMapSchema
+  "Legacy fail-map shape returned to protocol callers:
+   {:success? false :errors [msg] :reconnecting? bool}."
+  [:map {:closed false}
+   [:success? [:= false]]
+   [:errors [:tuple :string]]
+   [:reconnecting? :boolean]])
+
+(m/=> transient? [:=> [:cat AnyMilvusFailureSchema] :boolean])
+
+(m/=> reconnect-timeout [:=> [:cat [:maybe :string]] ReconnectTimeoutFailureSchema])
+
+(m/=> ->legacy-map [:=> [:cat AnyMilvusFailureSchema] LegacyFailMapSchema])

@@ -31,7 +31,8 @@
             [hive-milvus.resilience.probe :as probe]
             [hive-milvus.resilience.retry :as retry]
             [hive-ttracking.clock :as clock]
-            [taoensso.timbre :as log])
+            [taoensso.timbre :as log]
+            [malli.core :as m])
   (:import [java.util.concurrent Executors ScheduledExecutorService ThreadFactory TimeUnit]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -164,3 +165,41 @@
      :tick-count  (:tick-count s)
      :last-tick   (:last-tick s)
      :last-alive? (:last-alive? s)}))
+
+(def ConfigAtom
+  "Mutable store-config holder threaded into the health-check policy."
+  [:fn #(instance? clojure.lang.IAtom %)])
+
+(def StartResult
+  "Return shape of `start!`."
+  [:map {:closed true}
+   [:started :boolean]
+   [:reason {:optional true} [:maybe :string]]
+   [:interval-s {:optional true} number?]])
+
+(def StopResult
+  "Return shape of `stop!`."
+  [:map {:closed true}
+   [:stopped :boolean]
+   [:reason {:optional true} :string]
+   [:ticks-completed {:optional true} :int]])
+
+(def SchedulerStatus
+  "Return shape of `status` — snapshot of the scheduler state."
+  [:map {:closed true}
+   [:running? :boolean]
+   [:interval-s [:maybe :int]]
+   [:tick-count :int]
+   [:last-tick [:maybe :int]]
+   [:last-alive? [:maybe :boolean]]])
+
+(m/=> health-tick! [:=> [:cat ConfigAtom] :boolean])
+
+(m/=> start!
+      [:function
+       [:=> [:cat ConfigAtom] StartResult]
+       [:=> [:cat ConfigAtom [:maybe number?]] StartResult]])
+
+(m/=> stop! [:=> [:cat] StopResult])
+
+(m/=> status [:=> [:cat] SchedulerStatus])
