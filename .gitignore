@@ -8,3 +8,5 @@ target/
 local.deps.edn
 .clj-kondo/
 *.elc
+.clj-kondo/imports/
+.lsp/.cache/
