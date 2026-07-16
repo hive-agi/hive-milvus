@@ -8,6 +8,7 @@
             [hive-milvus.store.routing :as routing]
             [hive-milvus.store.schema :as schema]
             [milvus-clj.api :as milvus]
+            [hive-spi.memory.ports :as ports]
             [clojure.string :as str]
             [taoensso.timbre :as log]
             [hive-milvus.relocate.pipeline :as reloc-pipeline]
@@ -222,19 +223,23 @@
 (defn cleanup-expired!
   [config-atom]
   (resilient config-atom
-    (let [now (schema/now-iso)]
+    (let [now       (schema/now-iso)
+          protected (ports/protected-ids)]
       (reduce
        (fn [total coll-name]
          (try
            (let [expired @(milvus/query-scalar coll-name
                             {:filter (str "expires != \"\" and expires < \"" now "\"")
                              :output-fields ["id"]
-                             :limit 10000})]
-             (when (seq expired)
-               (let [ids (mapv :id expired)]
-                 @(milvus/delete coll-name ids)
-                 (log/info "Cleaned up" (count ids) "expired entries from Milvus collection" coll-name)))
-             (+ total (count expired)))
+                             :limit 10000})
+                 ids     (into [] (comp (map :id) (remove protected)) expired)
+                 spared  (- (count expired) (count ids))]
+             (when (seq ids)
+               @(milvus/delete coll-name ids)
+               (log/info "Cleaned up" (count ids) "expired entries from Milvus collection" coll-name
+                         (when (pos? spared)
+                           (str "(" spared " spared by synthesis afterlife)"))))
+             (+ total (count ids)))
            (catch Exception _ total)))
        0
        (lookup/known-collections config-atom)))))
