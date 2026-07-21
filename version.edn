@@ -11,4 +11,4 @@
  ;; published core POM (kept in deps.edn for monorepo/addon dev).
  :pom-exclude-deps [io.github.hive-agi/hive-mcp
                     io.github.hive-agi/hive-addon
-                    io.github.hive-agi/hive-help]}
+                    io.github.hive-agi/hive-help] :publish  :clojars}
