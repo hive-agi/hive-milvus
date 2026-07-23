@@ -8,7 +8,7 @@
 
         ;; hive-spi — SPI leaf: the IMemoryStore protocol family lives in
         ;; hive-spi.memory.ports. CORE requires it (store/queue/schema).
-        io.github.hive-agi/hive-spi {:mvn/version "0.1.7"}
+        io.github.hive-agi/hive-spi {:mvn/version "0.1.8"}
 
         ;; hive-mcp — host-integration ONLY (addon.clj + relocate_addon.clj:
         ;; store registry, extensions/tools, embedder injection). Excluded from
@@ -23,7 +23,7 @@
         io.github.hive-agi/hive-di {:mvn/version "0.3.2"}
 
         ;; Bounded parallelism — queue drain uses hive-weave.parallel/bounded-pmap
-        io.github.hive-agi/hive-weave {:mvn/version "0.2.7"}
+        io.github.hive-agi/hive-weave {:mvn/version "0.2.8"}
 
         ;; Pure helpers for actionable error/help messages
         ;; (transitive: hive-mcp.embeddings.routing requires hive-help.core)
@@ -31,17 +31,17 @@
 
         ;; CPPB pattern macros (Collect → Promote → Pipeline → Boundary).
         ;; Used by hive-milvus.relocate.* — standalone Apache 2.0 lib.
-        io.github.hive-agi/hive-cppb {:mvn/version "0.1.2"}
+        io.github.hive-agi/hive-cppb {:mvn/version "0.1.3"}
 
         ;; Clock facade — domain code MUST NOT call System/currentTimeMillis
         ;; directly; route through hive-ttracking.clock so tests can pin
         ;; time deterministically. Used by resilience.probe + reconnect.
-        io.github.hive-agi/hive-ttracking {:mvn/version "0.1.6"}
+        io.github.hive-agi/hive-ttracking {:mvn/version "0.1.7"}
 
         ;; Result/Railway DSL + try-effect/rescue sugar.
         ;; Already transitive via hive-cppb/hive-weave but pinned explicit
         ;; here so resilience.* doesn't depend on transitive resolution.
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.5"}}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.6"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]
@@ -51,7 +51,7 @@
                           io.github.hive-agi/hive-di   {:mvn/version "0.3.2"}}}
   :migrate {:extra-deps {org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
                          org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
-                         io.github.hive-agi/hive-dsl {:mvn/version "0.5.5"}}
+                         io.github.hive-agi/hive-dsl {:mvn/version "0.5.6"}}
             :override-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}
                             io.github.hive-agi/hive-di   {:mvn/version "0.3.2"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
@@ -63,8 +63,8 @@
   :test {:extra-paths ["test"]
          :extra-deps {lambdaisland/kaocha         {:mvn/version "1.91.1392"}
                       org.clojure/test.check      {:mvn/version "1.1.1"}
-                      io.github.hive-agi/hive-test {:mvn/version "0.3.8"}
-                      io.github.hive-agi/hive-schemas {:mvn/version "0.1.6"}}
+                      io.github.hive-agi/hive-test {:mvn/version "0.3.9"}
+                      io.github.hive-agi/hive-schemas {:mvn/version "0.1.9"}}
          :main-opts ["-m" "kaocha.runner"]}
 
   ;; Clojars publishing. `clojure -T:build <jar|install|deploy>`. Version =
