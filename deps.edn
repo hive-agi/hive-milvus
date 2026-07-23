@@ -41,7 +41,7 @@
         ;; Result/Railway DSL + try-effect/rescue sugar.
         ;; Already transitive via hive-cppb/hive-weave but pinned explicit
         ;; here so resilience.* doesn't depend on transitive resolution.
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.7"}}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.8"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]
@@ -51,7 +51,7 @@
                           io.github.hive-agi/hive-di   {:mvn/version "0.3.2"}}}
   :migrate {:extra-deps {org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
                          org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
-                         io.github.hive-agi/hive-dsl {:mvn/version "0.5.7"}}
+                         io.github.hive-agi/hive-dsl {:mvn/version "0.5.8"}}
             :override-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}
                             io.github.hive-agi/hive-di   {:mvn/version "0.3.2"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
