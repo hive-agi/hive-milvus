@@ -1,6 +1,5 @@
 (ns hive-milvus.addon-test
   (:require [clojure.test :refer [is use-fixtures]]
-            [hive-mcp.addons.protocol :as addon-proto]
             [hive-mcp.protocols.memory :as mem-proto]
             [hive-milvus.addon :as addon]
             [hive-milvus.config :as config]
@@ -10,7 +9,8 @@
             [hive-milvus.store :as store]
             [hive-test.golden :as golden]
             [hive-test.mutation :as mut]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [hive-addon.protocol :as addon-proto]))
 
 (def InitResult
   [:map
