@@ -8,7 +8,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-mcp.memory.store.contract-test :as contract]
             [hive-milvus.store :as milvus-store]
-            [hive-mcp.protocols.memory :as proto]))
+            [hive-spi.memory.ports :as proto]))
 
 ;; =============================================================================
 ;; Factory Binding

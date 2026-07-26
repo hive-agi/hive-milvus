@@ -10,7 +10,8 @@
             [hive-test.generators.memory :as gen-mem]
             [hive-test.properties :as props]
             [hive-milvus.store :as milvus-store]
-            [hive-mcp.protocols.memory :as proto]))
+            [hive-spi.memory.ports :as proto]
+            [hive-spi.memory.ids :as mem-ids]))
 
 ;; =============================================================================
 ;; Shared Store
@@ -63,8 +64,8 @@
 (defspec prop-entry-to-record-total 50
   (prop/for-all [entry gen-mem/gen-memory-entry]
     (let [full (assoc entry
-                 :id (proto/generate-id)
-                 :content-hash (proto/content-hash (:content entry)))]
+                 :id (mem-ids/generate-id)
+                 :content-hash (mem-ids/content-hash (:content entry)))]
       ;; entry->record calls the embedding service, so we can't run it
       ;; without a live provider. Test the pure parts instead.
       (and (string? (:id full))
@@ -105,7 +106,7 @@
   (prop/for-all [n (gen/choose 1 5)]
     (let [store (fresh-store)
           ids (mapv (fn [i]
-                      (let [entry {:id (proto/generate-id)
+                      (let [entry {:id (mem-ids/generate-id)
                                    :type :note
                                    :content (str "prop-inv-" i "-" (random-uuid))
                                    :tags ["prop-test"]
@@ -122,7 +123,7 @@
 
 (deftest test-metamorphic-query-monotonic
   (let [store (fresh-store)
-        mk (fn [i] {:id (proto/generate-id)
+        mk (fn [i] {:id (mem-ids/generate-id)
                      :type :note
                      :content (str "meta-" i)
                      :tags ["meta"]

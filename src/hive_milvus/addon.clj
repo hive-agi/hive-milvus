@@ -18,7 +18,8 @@
      (addons/init-addon! \"hive.milvus\"
        {:host \"milvus.milvus.svc\" :port 19530})"
   (:require [hive-addon.protocol :as addon-proto]
-            [hive-mcp.protocols.memory :as mem-proto]
+            [hive-spi.memory.ports :as mem-ports]
+            [hive-spi.memory.registry :as mem-reg]
             [hive-milvus.config :as config]
             [hive-milvus.store :as store]
             [hive-dsl.result :as r]
@@ -53,11 +54,11 @@
                                                     :transport])]
             (embed-adapter/install!)
             (let [store (store/create-store store-config)
-                  connect-res (mem-proto/connect! store resolved)]
+                  connect-res (mem-ports/connect! store resolved)]
               (if (:success? connect-res)
                 (do
                   (reset! store-atom store)
-                  (mem-proto/set-store! store)
+                  (mem-reg/set-store! store)
                   (try
                     (reloc-addon/install!)
                     (catch Throwable e
@@ -81,9 +82,9 @@
 
   (shutdown! [_this]
     (when-let [store @store-atom]
-      (if (identical? store (:default (mem-proto/registered-stores)))
-        (mem-proto/reset-active-store!)
-        (mem-proto/disconnect! store))
+      (if (identical? store (:default (mem-reg/registered-stores)))
+        (mem-reg/reset-active-store!)
+        (mem-ports/disconnect! store))
       (reset! store-atom nil)
       (try
         (reloc-addon/uninstall!)
@@ -99,7 +100,7 @@
 
   (health [_this]
     (if-let [store @store-atom]
-      (let [h (mem-proto/health-check store)]
+      (let [h (mem-ports/health-check store)]
         {:status (if (:healthy? h) :ok :down)
          :details h})
       {:status :down

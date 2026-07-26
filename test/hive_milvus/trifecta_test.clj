@@ -9,8 +9,7 @@
             [hive-test.trifecta :refer [deftrifecta deftest-facets]]
             [hive-test.properties :as props]
             [hive-test.generators.memory :as gen-mem]
-            [hive-milvus.store :as milvus-store]
-            [hive-mcp.protocols.memory :as proto]))
+            [hive-milvus.store :as milvus-store]))
 
 ;; =============================================================================
 ;; 1. tags->str: golden + totality + mutation

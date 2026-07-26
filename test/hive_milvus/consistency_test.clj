@@ -13,7 +13,8 @@
             [hive-test.properties :as props]
             [hive-test.mutation :as mut]
             [hive-milvus.store :as milvus-store]
-            [hive-mcp.protocols.memory :as proto]
+            [hive-spi.memory.ports :as proto]
+            [hive-spi.memory.ids :as mem-ids]
             [milvus-clj.api :as milvus]))
 
 ;; =============================================================================
@@ -66,7 +67,7 @@
   "test/golden/hive-milvus/read-after-write.edn"
   (fn []
     (let [store (fresh-store)
-          entry {:id (proto/generate-id)
+          entry {:id (mem-ids/generate-id)
                  :type :note
                  :content "consistency-golden-test"
                  :tags ["consistency" "golden"]
@@ -85,7 +86,7 @@
 (defspec prop-add-get-roundtrip 10
   (prop/for-all [suffix gen/string-alphanumeric]
     (let [store (fresh-store)
-          entry {:id (proto/generate-id)
+          entry {:id (mem-ids/generate-id)
                  :type :note
                  :content (str "prop-roundtrip-" suffix)
                  :tags ["prop-test"]
@@ -106,7 +107,7 @@
           tag (str "vis-" (random-uuid))
           ids (mapv (fn [i]
                       (proto/add-entry! store
-                        {:id (proto/generate-id)
+                        {:id (mem-ids/generate-id)
                          :type :note
                          :content (str "visibility-" i)
                          :tags [tag]
@@ -135,7 +136,7 @@
         [])))
   (fn []
     (let [store (fresh-store)
-          entry {:id (proto/generate-id)
+          entry {:id (mem-ids/generate-id)
                  :type :note
                  :content "mutation-consistency-test"
                  :tags ["mutation"]
@@ -157,7 +158,7 @@
   (fn []
     (let [store (fresh-store)
           _ (proto/add-entry! store
-              {:id (proto/generate-id)
+              {:id (mem-ids/generate-id)
                :type :note
                :content "query-mutation-test"
                :tags ["qmt"]
