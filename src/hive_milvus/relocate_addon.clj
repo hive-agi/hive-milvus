@@ -19,7 +19,7 @@
      Mixing them would couple the runner to MCP plumbing it doesn't
      need."
   (:require [hive-mcp.extensions.registry :as ext]
-            [hive-mcp.protocols.memory :as mem-proto]
+            [hive-spi.memory.registry :as mem-reg]
             [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-milvus.relocate :as reloc]
             [taoensso.timbre :as log]))
@@ -29,7 +29,7 @@
    Returns nil if no store is registered or if the registered store
    isn't a Milvus instance."
   []
-  (when-let [store (mem-proto/get-store)]
+  (when-let [store (mem-reg/get-store)]
     (:config-atom store)))
 
 (defn handle-relocate-start
@@ -47,7 +47,7 @@
                  cursor-base (assoc :cursor-base cursor-base))
           result (reloc/start! config-atom opts)]
       (mcp-json result))
-    (mcp-error "Relocate requires the Milvus store to be active. No active store found via mem-proto/get-store.")))
+    (mcp-error "Relocate requires the Milvus store to be active. No active store found via mem-reg/get-store.")))
 
 (defn handle-relocate-status
   "Return current relocation state snapshot + on-disk cursor."

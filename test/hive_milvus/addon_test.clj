@@ -1,7 +1,7 @@
 (ns hive-milvus.addon-test
   (:require [clojure.test :refer [is use-fixtures]]
-            [hive-mcp.addons.protocol :as addon-proto]
-            [hive-mcp.protocols.memory :as mem-proto]
+            [hive-spi.memory.ports :as proto]
+            [hive-spi.memory.registry :as mem-reg]
             [hive-milvus.addon :as addon]
             [hive-milvus.config :as config]
             [hive-milvus.embed.adapter :as embed-adapter]
@@ -10,7 +10,8 @@
             [hive-milvus.store :as store]
             [hive-test.golden :as golden]
             [hive-test.mutation :as mut]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [hive-addon.protocol :as addon-proto]))
 
 (def InitResult
   [:map
@@ -45,11 +46,11 @@
                   store/create-store (fn [_]
                                        (swap! events conj :store-created)
                                        memory-store)
-                  mem-proto/connect! (fn [actual _]
+                  proto/connect! (fn [actual _]
                                        (is (identical? memory-store actual))
                                        (swap! events conj :connected)
                                        {:success? true})
-                  mem-proto/set-store! (fn [actual]
+                  mem-reg/set-store! (fn [actual]
                                          (is (identical? memory-store actual))
                                          (swap! events conj :store-set)
                                          actual)
@@ -74,8 +75,8 @@
       (port/reset-embedder!)
       (with-redefs [config/resolve-MilvusConfig (fn [_] {:ok resolved-config})
                     store/create-store (fn [_] memory-store)
-                    mem-proto/connect! (fn [_ _] {:success? true})
-                    mem-proto/set-store! identity
+                    proto/connect! (fn [_ _] {:success? true})
+                    mem-reg/set-store! identity
                     reloc-addon/install! (fn [] nil)]
         (addon-proto/initialize! instance {})
         (is (instance? hive_milvus.embed.adapter.HiveMcpEmbedder

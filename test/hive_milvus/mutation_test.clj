@@ -6,7 +6,8 @@
   (:require [clojure.test :refer [deftest testing is]]
             [hive-test.mutation :as mut]
             [hive-milvus.store :as milvus-store]
-            [hive-mcp.protocols.memory :as proto]))
+            [hive-spi.memory.ports :as proto]
+            [hive-spi.memory.ids :as mem-ids]))
 
 ;; =============================================================================
 ;; Mutation: entry->record drops tags (silent data loss)
@@ -22,7 +23,7 @@
           _ (proto/connect! store {:host "localhost" :port 19530
                                    :collection-name "hive-mcp-mutation-test"})
           _ (proto/reset-store! store)
-          entry {:id (proto/generate-id)
+          entry {:id (mem-ids/generate-id)
                  :type :convention
                  :content "mutation-test-tags"
                  :tags ["alpha" "beta" "gamma"]
@@ -47,7 +48,7 @@
           _ (proto/connect! store {:host "localhost" :port 19530
                                    :collection-name "hive-mcp-mutation-test"})
           _ (proto/reset-store! store)
-          entry {:id (proto/generate-id)
+          entry {:id (mem-ids/generate-id)
                  :type :decision
                  :content "mutation-test-type"
                  :tags ["test"]
@@ -71,10 +72,10 @@
                                    :collection-name "hive-mcp-mutation-test"})
           _ (proto/reset-store! store)
           _ (proto/add-entry! store
-              {:id (proto/generate-id) :type :note
+              {:id (mem-ids/generate-id) :type :note
                :content "note-entry" :tags [] :duration :medium})
           _ (proto/add-entry! store
-              {:id (proto/generate-id) :type :decision
+              {:id (mem-ids/generate-id) :type :decision
                :content "decision-entry" :tags [] :duration :medium})
           notes (proto/query-entries store {:type :note :limit 100})]
       ;; If filter is broken, we'd get both entries for a :note query
@@ -100,12 +101,12 @@
                                    :collection-name "hive-mcp-mutation-test"})
           _ (proto/reset-store! store)
           ;; stale entry: beta=9, alpha=1 → p=0.9
-          stale {:id (proto/generate-id) :type :note
+          stale {:id (mem-ids/generate-id) :type :note
                  :content "stale-mut" :tags [] :duration :medium}
           _ (proto/add-entry! store stale)
           _ (proto/update-staleness! store (:id stale) {:beta 9})
           ;; fresh entry: beta=1, alpha=9 → p=0.1
-          fresh {:id (proto/generate-id) :type :note
+          fresh {:id (mem-ids/generate-id) :type :note
                  :content "fresh-mut" :tags [] :duration :medium}
           _ (proto/add-entry! store fresh)
           _ (proto/update-staleness! store (:id fresh) {:beta 1})

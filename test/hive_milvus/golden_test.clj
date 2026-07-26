@@ -5,8 +5,7 @@
    unintended behavioral changes during refactoring."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-test.golden :as golden]
-            [hive-milvus.store :as milvus-store]
-            [hive-mcp.protocols.memory :as proto]))
+            [hive-milvus.store :as milvus-store]))
 
 ;; =============================================================================
 ;; Golden: tags serialization shape
