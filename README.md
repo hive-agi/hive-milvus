@@ -1,5 +1,14 @@
 # hive-milvus
 
+<!-- hive-badges -->
+
+[![Clojars Project](https://img.shields.io/clojars/v/io.github.hive-agi/hive-milvus.svg)](https://clojars.org/io.github.hive-agi/hive-milvus)
+[![cljdoc](https://cljdoc.org/badge/io.github.hive-agi/hive-milvus)](https://cljdoc.org/d/io.github.hive-agi/hive-milvus/CURRENT)
+[![release](https://github.com/hive-agi/hive-milvus/actions/workflows/release.yml/badge.svg)](https://github.com/hive-agi/hive-milvus/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
+<!-- /hive-badges -->
+
 Milvus vector database addon for [hive-mcp](https://github.com/hive-agi/hive-mcp).
 
 Part of the [hive-agi](https://github.com/hive-agi) ecosystem.
