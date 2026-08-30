@@ -156,6 +156,39 @@
       {:moved? false :error (:error res) :id id
        :detail (dissoc res :error)})))
 
+(def FanOutOutcome
+  "What one collection contributed to a fan-out: its rows, and — when it could
+   not be reached — the message saying so. Rows and an error are not exclusive;
+   a partial read may carry both."
+  [:map {:closed true}
+   [:collection :string]
+   [:rows [:sequential :any]]
+   [:error {:optional true} [:maybe :string]]])
+
+(def FanOut
+  "The rows a fan-out gathered, and the collections whose silence is unexplained
+   by the data. `:failed` empty means every collection answered."
+  [:map {:closed true}
+   [:rows [:sequential :any]]
+   [:failed [:sequential [:map {:closed true}
+                          [:collection :string]
+                          [:message [:maybe :string]]]]]])
+
+(defn fan-out
+  "Fold per-collection OUTCOMES into gathered rows and the failures that make an
+   empty result unreliable.
+
+   Pure, and the whole of the isolation policy: a failing collection contributes
+   whatever rows it managed and is recorded in `:failed`, rather than sinking
+   the query or vanishing."
+  [outcomes]
+  {:rows   (into [] (mapcat :rows) outcomes)
+   :failed (into [] (keep (fn [{:keys [collection error]}]
+                            (when error {:collection collection :message error})))
+                 outcomes)})
+
+(m/=> fan-out [:=> [:cat [:sequential FanOutOutcome]] FanOut])
+
 (defn query-entries
   "Fan out a scalar-filter query across every known collection.
 
@@ -164,37 +197,47 @@
    contributes [] and the others return their hits. The failure is
    logged at WARN so callers don't read a silent empty result as
    `:limit not respected` (the silent-swallow used to surface as the
-   user-visible bug 20260503012357-7d008e50)."
+   user-visible bug 20260503012357-7d008e50).
+
+   A log line is not something a caller can branch on, so when any coll
+   failed the returned vector also carries
+
+     ^{:hive-milvus/failed-collections [{:collection name :message str} ...]}
+
+   Absent metadata means every collection answered, so an empty result is a
+   fact about the DATA. Present metadata means the emptiness is partly an
+   artifact of the failure, and a caller must not report it as 'nothing
+   stored'.
+
+   Effectful boundary only — the isolation policy itself is `fan-out`."
   [config-atom opts]
   (resilient config-atom
     (let [colls (lookup/known-collections config-atom)
           {:keys [limit output-fields order-by]
            :or {limit 100}} opts
           fields (or output-fields schema/default-read-fields)
-          filter-expr (schema/build-filter-expr opts)
-          fan-out (mapcat
-                   (fn [coll-name]
-                     (try
-                       (index/ensure-scalar-indexes! coll-name)
-                       (if filter-expr
-                         @(milvus/query-scalar coll-name
-                            {:filter filter-expr :limit limit
-                             :output-fields fields
-                             :consistency-level :bounded})
-                         @(milvus/query-scalar coll-name
-                            {:filter "id != \"\"" :limit limit
-                             :output-fields fields
-                             :consistency-level :bounded}))
-                       (catch Exception e
-                         (log/warn "milvus query-entries: collection"
-                                   coll-name "failed —" (.getMessage e)
-                                   "(returning [] for this coll)")
-                         [])))
-                   colls)]
-      (-> (mapv schema/record->entry fan-out)
-          (apply-order-by order-by)
-          (cond->> (> (count fan-out) limit) (take limit))
-          vec))))
+          filter-expr (or (schema/build-filter-expr opts) "id != \"\"")
+          outcomes (mapv
+                    (fn [coll-name]
+                      (try
+                        (index/ensure-scalar-indexes! coll-name)
+                        {:collection coll-name
+                         :rows @(milvus/query-scalar coll-name
+                                  {:filter filter-expr :limit limit
+                                   :output-fields fields
+                                   :consistency-level :bounded})}
+                        (catch Exception e
+                          (log/warn "milvus query-entries: collection"
+                                    coll-name "failed —" (.getMessage e)
+                                    "(returning [] for this coll)")
+                          {:collection coll-name :rows [] :error (.getMessage e)})))
+                    colls)
+          {:keys [rows failed]} (fan-out outcomes)]
+      (cond-> (-> (mapv schema/record->entry rows)
+                  (apply-order-by order-by)
+                  (cond->> (> (count rows) limit) (take limit))
+                  vec)
+        (seq failed) (with-meta {:hive-milvus/failed-collections failed})))))
 
 (defn search-context
   "The live collaborators a semantic search runs against."
