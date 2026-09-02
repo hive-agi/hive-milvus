@@ -18,11 +18,26 @@
      speaks MCP (json text wrapper, error formatting, param coercion).
      Mixing them would couple the runner to MCP plumbing it doesn't
      need."
-  (:require [hive-mcp.extensions.registry :as ext]
-            [hive-spi.memory.registry :as mem-reg]
-            [hive-mcp.tools.core :refer [mcp-json mcp-error]]
+  (:require [hive-spi.memory.registry :as mem-reg]
             [hive-milvus.relocate :as reloc]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-addon.host :as host]
+            [hive-dsl.result :as r]))
+
+;; =============================================================================
+;; Host services
+;;
+;; The extension registry and the MCP response formatters belong to the host.
+;; They are resolved through the var at call time so this namespace loads with
+;; no host present; every function below is only ever REACHED through the host's
+;; own tool dispatch, so the degraded (r/err :host/absent ..) return is a
+;; diagnostic, not a path the addon takes in normal operation.
+;; =============================================================================
+
+(host/defsoft contribute-commands! 'hive-mcp.extensions.registry/contribute-commands!)
+(host/defsoft retract-commands! 'hive-mcp.extensions.registry/retract-commands!)
+(host/defsoft mcp-json 'hive-mcp.tools.core/mcp-json)
+(host/defsoft mcp-error 'hive-mcp.tools.core/mcp-error)
 
 (defn- store-config-atom
   "Extract the `:config-atom` field from the active MilvusMemoryStore.
@@ -69,14 +84,9 @@
         result (apply reloc/reset-cursor! args)]
     (mcp-json result)))
 
-(defn install!
-  "Contribute relocate-* commands to the consolidated `memory` tool.
-   Idempotent — safe to call repeatedly. Should run AFTER MilvusAddon
-   initializes so the active store is reachable when handlers fire."
-  []
-  (ext/contribute-commands!
-   "memory" :hive.milvus.relocate
-   {"relocate-start"
+(def ^:private relocate-commands
+  "The four subcommands this addon contributes to the `memory` tool."
+  {"relocate-start"
     {:handler     handle-relocate-start
      :params      {"source-coll" {:type "string"
                                   :description "Milvus source collection (default: hive_mcp_memory)"}
@@ -104,10 +114,28 @@
                                   :description "Override cursor file prefix"}}
      :description "Delete the on-disk cursor for a source collection. Call after relocate-stop when re-running from scratch (e.g. after wiping target collections in dev)."}})
 
-  (log/info "hive-milvus.relocate-addon installed memory/relocate-* commands"))
+(defn install!
+  "Contribute relocate-* commands to the consolidated `memory` tool.
+   Idempotent — safe to call repeatedly. Should run AFTER MilvusAddon
+   initializes so the active store is reachable when handlers fire.
+
+   Returns the registry's result. With no host on the classpath there is no
+   registry to contribute to, and that is reported as an :host/absent err
+   rather than logged as a successful install."
+  []
+  (let [result (contribute-commands! "memory" :hive.milvus.relocate relocate-commands)]
+    (if (r/err? result)
+      (log/warn "hive-milvus.relocate-addon: memory/relocate-* NOT installed:" result)
+      (log/info "hive-milvus.relocate-addon installed memory/relocate-* commands"))
+    result))
 
 (defn uninstall!
-  "Remove all relocate-* contributions from the memory tool."
+  "Remove all relocate-* contributions from the memory tool.
+   Returns the registry's result, which is an :host/absent err when no host is
+   on the classpath to retract from."
   []
-  (ext/retract-commands! "memory" :hive.milvus.relocate)
-  (log/info "hive-milvus.relocate-addon uninstalled"))
+  (let [result (retract-commands! "memory" :hive.milvus.relocate)]
+    (if (r/err? result)
+      (log/warn "hive-milvus.relocate-addon: nothing retracted:" result)
+      (log/info "hive-milvus.relocate-addon uninstalled"))
+    result))

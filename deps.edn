@@ -10,10 +10,11 @@
         ;; hive-spi.memory.ports. CORE requires it (store/queue/schema).
         io.github.hive-agi/hive-spi {:mvn/version "0.2.0"}
 
-        ;; hive-mcp — host-integration ONLY (addon.clj + relocate_addon.clj:
-        ;; store registry, extensions/tools, embedder injection). Excluded from
-        ;; the published core jar; the core no longer depends on it (seam-4).
-        io.github.hive-agi/hive-mcp {:mvn/version "0.21.1"}
+        ;; hive-mcp is TEST-scope only (see the :test alias). No namespace
+        ;; under src/ requires the host at load time any more: the store
+        ;; registry, the extension/tool surface and the embedder injection are
+        ;; soft-resolved through hive-addon.host, so every namespace here loads
+        ;; with no host on the classpath. no-host-require-test enforces it.
 
         ;; IAddon contract leaf. Pin MUST match hive-mcp's so the addon
         ;; record satisfies the same protocol object the host registry uses.
@@ -64,7 +65,11 @@
          :extra-deps {lambdaisland/kaocha         {:mvn/version "1.91.1392"}
                       org.clojure/test.check      {:mvn/version "1.1.3"}
                       io.github.hive-agi/hive-test {:mvn/version "0.3.17"}
-                      io.github.hive-agi/hive-schemas {:mvn/version "0.1.29"}}
+                      io.github.hive-agi/hive-schemas {:mvn/version "0.1.29"}
+                      ;; The host, TEST-scope only: the suite exercises the
+                      ;; wired path alongside the degraded one. Nothing under
+                      ;; src/ may require it.
+                      io.github.hive-agi/hive-mcp {:mvn/version "0.21.1"}}
          :main-opts ["-m" "kaocha.runner"]}
 
   ;; Clojars publishing. `clojure -T:build <jar|install|deploy>`. Version =
