@@ -141,14 +141,17 @@
    reconnect loop isn't already running, kicks the loop preemptively
    so healing starts before the caller's RPC fails.
 
-   Does NOT block waiting for recovery — `with-auto-reconnect` still
+   Does NOT block waiting for recovery, `with-auto-reconnect` still
    owns the reactive retry budget. This just shrinks the window between
    'connection died' and 'reconnect loop running'.
+
+   TOTAL: never throws. A probe that throws cannot vouch for the client,
+   so it counts as dead and kicks the loop like any other dead reading.
 
    Returns true if probe says alive at the end of the call, false if
    still dead (the caller's RPC will then hit the reactive path)."
   [config-atom]
-  (if (probe/alive?)
+  (if (dsl-r/rescue false (probe/alive?))
     true
     (do
       (when-not (:running? @reconnect/reconnect-state)
