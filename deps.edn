@@ -28,7 +28,7 @@
 
         ;; Pure helpers for actionable error/help messages
         ;; (transitive: hive-mcp.embeddings.routing requires hive-help.core)
-        io.github.hive-agi/hive-help {:mvn/version "0.1.1"}
+        io.github.hive-agi/hive-help {:mvn/version "0.1.0"}
 
         ;; CPPB pattern macros (Collect → Promote → Pipeline → Boundary).
         ;; Used by hive-milvus.relocate.* — standalone Apache 2.0 lib.
