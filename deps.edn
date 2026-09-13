@@ -56,11 +56,8 @@
             :override-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}
                             io.github.hive-agi/hive-di   {:mvn/version "0.4.8"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
-  ;; Sibling :local/root overrides so the suite resolves standalone when the
-  ;; git-pinned siblings lag the code here. Compose with :test.
-  :local-src {:override-deps {io.github.hive-agi/milvus-clj {:local/root "../milvus-clj"}
-                              io.github.hive-agi/hive-mcp   {:local/root "../hive-mcp"}
-                              io.github.hive-agi/hive-spi    {:local/root "../hive-spi"}}}
+  ;; Sibling :local/root overrides (:local-src alias) live in the untracked
+  ;; local.deps.edn: clojure -Sdeps "$(cat local.deps.edn)" -M:test:local-src
   :test {:extra-paths ["test"]
          :extra-deps {lambdaisland/kaocha         {:mvn/version "1.91.1392"}
                       org.clojure/test.check      {:mvn/version "1.1.3"}
