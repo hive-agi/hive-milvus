@@ -5,8 +5,8 @@
         org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
         org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
         io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}
-        io.github.hive-agi/hive-di {:mvn/version "0.4.8"}
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.21"}}
+        io.github.hive-agi/hive-di {:mvn/version "0.4.10"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.23"}}
 
  :aliases
  {:with-milvus {:extra-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}}}
