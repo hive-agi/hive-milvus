@@ -22,7 +22,7 @@
             [hive-milvus.relocate :as reloc]
             [taoensso.timbre :as log]
             [hive-addon.host :as host]
-            [hive-dsl.result :as r]))
+            [hive-addon.registry.commands :as addon-cmds]))
 
 ;; =============================================================================
 ;; Host services
@@ -34,8 +34,6 @@
 ;; diagnostic, not a path the addon takes in normal operation.
 ;; =============================================================================
 
-(host/defsoft contribute-commands! 'hive-mcp.extensions.registry/contribute-commands!)
-(host/defsoft retract-commands! 'hive-mcp.extensions.registry/retract-commands!)
 (host/defsoft mcp-json 'hive-mcp.tools.core/mcp-json)
 (host/defsoft mcp-error 'hive-mcp.tools.core/mcp-error)
 
@@ -119,23 +117,18 @@
    Idempotent — safe to call repeatedly. Should run AFTER MilvusAddon
    initializes so the active store is reachable when handlers fire.
 
-   Returns the registry's result. With no host on the classpath there is no
-   registry to contribute to, and that is reported as an :host/absent err
-   rather than logged as a successful install."
+   The command store (hive-addon.registry.commands) is a compile-time
+   dependency now, not a host namespace reached by requiring-resolve, so
+   this always succeeds. Returns the contributed command names."
   []
-  (let [result (contribute-commands! "memory" :hive.milvus.relocate relocate-commands)]
-    (if (r/err? result)
-      (log/warn "hive-milvus.relocate-addon: memory/relocate-* NOT installed:" result)
-      (log/info "hive-milvus.relocate-addon installed memory/relocate-* commands"))
+  (let [result (addon-cmds/contribute! "memory" :hive.milvus.relocate relocate-commands)]
+    (log/info "hive-milvus.relocate-addon installed memory/relocate-* commands")
     result))
 
 (defn uninstall!
   "Remove all relocate-* contributions from the memory tool.
-   Returns the registry's result, which is an :host/absent err when no host is
-   on the classpath to retract from."
+   The command store is a compile-time dependency, so this always succeeds."
   []
-  (let [result (retract-commands! "memory" :hive.milvus.relocate)]
-    (if (r/err? result)
-      (log/warn "hive-milvus.relocate-addon: nothing retracted:" result)
-      (log/info "hive-milvus.relocate-addon uninstalled"))
+  (let [result (addon-cmds/retract! "memory" :hive.milvus.relocate)]
+    (log/info "hive-milvus.relocate-addon uninstalled")
     result))
