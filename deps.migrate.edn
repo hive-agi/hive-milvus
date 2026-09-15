@@ -1,12 +1,12 @@
 {:paths ["src"]
- :deps {org.clojure/clojure       {:mvn/version "1.12.1"}
-        org.clojure/data.json     {:mvn/version "2.5.1"}
+ :deps {org.clojure/clojure       {:mvn/version "1.12.6"}
+        org.clojure/data.json     {:mvn/version "2.5.2"}
         com.taoensso/timbre       {:mvn/version "6.8.0"}
-        org.xerial/sqlite-jdbc    {:mvn/version "3.49.1.0"}
-        org.slf4j/slf4j-simple    {:mvn/version "2.0.17"}
+        org.xerial/sqlite-jdbc    {:mvn/version "3.53.4.0"}
+        org.slf4j/slf4j-simple    {:mvn/version "2.0.19"}
         io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}
-        io.github.hive-agi/hive-di {:mvn/version "0.4.11"}
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.24"}}
+        io.github.hive-agi/hive-di {:mvn/version "0.4.12"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.27"}}
 
  :aliases
  {:with-milvus {:extra-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}}}
