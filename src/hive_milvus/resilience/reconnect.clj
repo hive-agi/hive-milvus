@@ -16,6 +16,7 @@
    Time discipline: never call `System/currentTimeMillis` directly — go
    through `hive-ttracking.clock/now-millis` so tests can pin time."
   (:require [hive-dsl.result :as r]
+            [hive-milvus.dial :as dial]
             [hive-milvus.resilience.probe :as probe]
             [hive-ttracking.clock :as clock]
             [milvus-clj.api :as milvus]
@@ -64,7 +65,7 @@
                            (select-keys cfg [:transport :host :port :token
                                              :database :secure]))
           milvus-cfg (merge {:connect-timeout-ms 30000} milvus-cfg)]
-      (milvus/connect! milvus-cfg)
+      (dial/dial! milvus-cfg)
       (if (probe/probe-once!)
         (do (log/info "milvus reconnect verified by probe")
             true)

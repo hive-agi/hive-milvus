@@ -2,6 +2,7 @@
   "Connection lifecycle helpers for MilvusMemoryStore."
   (:require [hive-milvus.embed.port :as port]
             [hive-milvus.collections :as collections]
+            [hive-milvus.dial :as dial]
             [hive-milvus.store.health :as health]
             [hive-milvus.store.index :as index]
             [hive-milvus.store.schema :as schema]
@@ -60,7 +61,7 @@
           (loop [attempt 1]
             (let [result
                   (try
-                    (milvus/connect! milvus-config)
+                    (dial/dial! milvus-config)
                     (preload-known-collections!)
                     {:success? true
                      :backend  "milvus"
