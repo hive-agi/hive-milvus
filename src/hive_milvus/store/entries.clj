@@ -362,7 +362,8 @@
    [:entry-count [:maybe [:int {:min 0}]]]
    [:collections [:map-of :string [:int {:min 0}]]]
    [:errors [:vector CollectionCountFailure]]
-   [:supports-search? :boolean]])
+   [:supports-search? :boolean]
+   [:capabilities [:vector :keyword]]])
 
 (defn- collection-count
   [collection-name]
@@ -390,6 +391,11 @@
       {:collection collection-name
        :error (or (ex-message e) (str (class e)))})))
 
+(def capabilities
+  "What callers may rely on beyond the port. :embed-text: an entry's transient
+   :embed-text is embedded in place of its :content and never stored."
+  [:embed-text])
+
 (defn store-status
   [config-atom]
   (resilient config-atom
@@ -402,7 +408,8 @@
        :collections coll-counts
        :errors errors
        :supports-search? (and (boolean (milvus/connected?))
-                              (supports-semantic-search? config-atom))})))
+                              (supports-semantic-search? config-atom))
+       :capabilities capabilities})))
 
 (m/=> store-status [:=> [:cat :any] StoreStatus])
 

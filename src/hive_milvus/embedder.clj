@@ -22,13 +22,18 @@
             [taoensso.timbre :as log]))
 
 (defn- ^String entry->content
-  "Coerce the entry's :content field to a string. Maps are JSON-encoded."
+  "The text to embed for `entry`: its transient `:embed-text` when a caller
+   supplied one (a store decorator whose `:content` is ciphertext), else
+   `:content` coerced to a string, maps JSON-encoded. `:embed-text` is never
+   written to the record."
   [entry]
-  (let [raw (or (:content entry) "")]
-    (if (map? raw)
-      (try (json/write-str raw)
-           (catch Exception _ (pr-str raw)))
-      (str raw))))
+  (let [embed-text (:embed-text entry)
+        raw        (or (:content entry) "")]
+    (cond
+      (string? embed-text) embed-text
+      (map? raw)           (try (json/write-str raw)
+                                (catch Exception _ (pr-str raw)))
+      :else                (str raw))))
 
 (defn- guard-dim
   "Reject an embedding whose width is not the target collection's (Milvus
