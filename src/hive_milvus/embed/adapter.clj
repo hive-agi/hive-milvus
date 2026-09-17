@@ -61,11 +61,37 @@
 (host/defsoft resilient-embedder
   'hive-mcp.embeddings.resilient/resilient-embedder :absent (constantly nil))
 
-(host/defsoft embed-text
+(host/defsoft embed-text-active
+  ;; hive-mcp feb2d8cd (2026-09-16) moved hive-mcp.chroma.embeddings to
+  ;; hive-mcp.embeddings.active. Same two-arity contract:
+  ;; (embed-text provider text).
+  'hive-mcp.embeddings.active/embed-text
+  :absent (fn [_embedder _content] ::absent))
+
+(host/defsoft embed-text-legacy
+  ;; The home every hive-mcp release up to 1.6.0 ships. Dropped once the
+  ;; fleet pins a host that carries hive-mcp.embeddings.active.
   'hive-mcp.chroma.embeddings/embed-text
-  :absent (fn [_embedder _content]
-            (throw (ex-info "embed-text unavailable: host absent"
-                            {:error :embedder/host-absent}))))
+  :absent (fn [_embedder _content] ::absent))
+
+(defn- embed-text
+  "Embed CONTENT with EMBEDDER through whichever home the host has for it:
+   hive-mcp.embeddings.active first, the pre-feb2d8cd chroma namespace
+   second. Neither present is the one host-absent throw, so a missing seam
+   fails the first write loudly instead of resolving to nil. Measured
+   2026-09-17: the live coordinator ran a host past the move while this
+   adapter still named the old home, and every memory add failed."
+  [embedder content]
+  (let [v (embed-text-active embedder content)]
+    (if (not= ::absent v)
+      v
+      (let [w (embed-text-legacy embedder content)]
+        (if (not= ::absent w)
+          w
+          (throw (ex-info "embed-text unavailable: host absent"
+                          {:error :embedder/host-absent
+                           :tried '[hive-mcp.embeddings.active/embed-text
+                                    hive-mcp.chroma.embeddings/embed-text]})))))))
 
 ;; =============================================================================
 ;; Adapter
