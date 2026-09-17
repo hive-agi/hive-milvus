@@ -40,35 +40,64 @@
     "id != \"\""
     (str "id >= \"" prefix "\" and id < \"" (succ-str prefix) "\"")))
 
-(defn- page
-  [coll filt]
-  (->> @(milvus/query-scalar coll
-                             {:filter            filt
-                              :limit             max-page
-                              :output-fields     ["id"]
-                              :consistency-level :strong})
-       (mapv :id)))
-
 (defn- non-digit-filter
   "Ids that do not start with a digit — the buckets below would miss them."
   []
   (str "id < \"" (first digits) "\" or id >= \"" (succ-str (str (last digits))) "\""))
 
-(defn- ids-with-prefix
-  [coll prefix depth]
-  (let [rows (page coll (prefix-filter prefix))]
-    (if (< (count rows) max-page)
-      rows
-      (if (>= depth max-depth)
-        (throw (ex-info "Cannot enumerate: bucket is still full at max depth"
-                        {:error  :enumerate/bucket-too-dense
-                         :coll   coll
-                         :prefix prefix}))
-        (into (if (str/blank? prefix) (page coll (non-digit-filter)) [])
-              (mapcat #(ids-with-prefix coll (str prefix %) (inc depth)))
-              digits)))))
+(defn- and-filter
+  "`bucket` narrowed by the caller's `base` expression; `base` blank means none."
+  [base bucket]
+  (if (str/blank? base)
+    bucket
+    (str "(" base ") and (" bucket ")")))
+
+(defn- too-dense [where prefix]
+  (ex-info "Cannot enumerate: bucket is still full at max depth"
+           {:error  :enumerate/bucket-too-dense
+            :filter where
+            :prefix prefix}))
+
+(defn- rows-with-prefix
+  "Lazy seq of every row matching `base` whose id starts with `prefix`. FETCH is
+   `(fn [filter-expr limit] rows)` and is never asked for more than `max-page`."
+  [fetch base prefix depth]
+  (lazy-seq
+   (let [rows (fetch (and-filter base (prefix-filter prefix)) max-page)]
+     (cond
+       (< (count rows) max-page) rows
+       (>= depth max-depth)      (throw (too-dense base prefix))
+       :else
+       (concat
+        (when (str/blank? prefix)
+          (let [odd (fetch (and-filter base (non-digit-filter)) max-page)]
+            (when (>= (count odd) max-page)
+              (throw (too-dense base :non-digit)))
+            odd))
+        (mapcat #(rows-with-prefix fetch base (str prefix %) (inc depth))
+                digits))))))
+
+(defn rows-matching
+  "Up to `limit` rows satisfying `filter-expr`, read through FETCH
+   (`(fn [filter-expr limit] rows)`), which is never asked for more than
+   `max-page`. Within the cap this is one fetch; above it the matching rows are
+   gathered from disjoint id-prefix buckets, stopping once `limit` are held.
+   Raises rather than truncating."
+  [fetch filter-expr limit]
+  (if (<= limit max-page)
+    (vec (fetch filter-expr limit))
+    (into [] (take limit) (rows-with-prefix fetch filter-expr "" 0))))
 
 (defn all-ids
   "Every id in `coll`, as a vector. Raises rather than truncating."
   [coll]
-  (vec (distinct (ids-with-prefix coll "" 0))))
+  (let [fetch (fn [filt limit]
+                @(milvus/query-scalar coll
+                                      {:filter            filt
+                                       :limit             limit
+                                       :output-fields     ["id"]
+                                       :consistency-level :strong}))]
+    (try
+      (vec (distinct (map :id (rows-with-prefix fetch nil "" 0))))
+      (catch clojure.lang.ExceptionInfo e
+        (throw (ex-info (ex-message e) (assoc (ex-data e) :coll coll) e))))))

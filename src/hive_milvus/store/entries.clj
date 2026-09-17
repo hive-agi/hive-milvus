@@ -11,6 +11,7 @@
             [hive-spi.memory.ports :as ports]
             [clojure.string :as str]
             [taoensso.timbre :as log]
+            [hive-milvus.relocate.enumerate :as enumerate]
             [hive-milvus.relocate.pipeline :as reloc-pipeline]
             [hive-dsl.result :as r]
             [hive-milvus.store.search.pipeline :as search-pipeline]
@@ -189,6 +190,24 @@
 
 (m/=> fan-out [:=> [:cat [:sequential FanOutOutcome]] FanOut])
 
+(defn collection-outcome
+  "One collection's FanOutOutcome for a scalar query: up to `limit` rows matching
+   `filter-expr`, read through FETCH (`(fn [filter-expr page-limit] rows)`).
+
+   A `limit` above Milvus's per-query cap is served in pages that each stay
+   within it (`enumerate/rows-matching`), so a large limit returns rows, never
+   a failure dressed as an empty result. A collection that cannot be read
+   yields `:rows []` with its `:error`."
+  [fetch coll-name filter-expr limit]
+  (try
+    {:collection coll-name
+     :rows (enumerate/rows-matching fetch filter-expr limit)}
+    (catch Exception e
+      (log/warn "milvus query-entries: collection"
+                coll-name "failed:" (ex-message e)
+                "(returning [] for this coll)")
+      {:collection coll-name :rows [] :error (or (ex-message e) (str (class e)))})))
+
 (defn query-entries
   "Fan out a scalar-filter query across every known collection.
 
@@ -219,18 +238,15 @@
           filter-expr (or (schema/build-filter-expr opts) "id != \"\"")
           outcomes (mapv
                     (fn [coll-name]
-                      (try
-                        (index/ensure-scalar-indexes! coll-name)
-                        {:collection coll-name
-                         :rows @(milvus/query-scalar coll-name
-                                  {:filter filter-expr :limit limit
-                                   :output-fields fields
-                                   :consistency-level :bounded})}
-                        (catch Exception e
-                          (log/warn "milvus query-entries: collection"
-                                    coll-name "failed —" (.getMessage e)
-                                    "(returning [] for this coll)")
-                          {:collection coll-name :rows [] :error (.getMessage e)})))
+                      (let [indexed (delay (index/ensure-scalar-indexes! coll-name))]
+                        (collection-outcome
+                         (fn [filt page-limit]
+                           @indexed
+                           @(milvus/query-scalar coll-name
+                              {:filter filt :limit page-limit
+                               :output-fields fields
+                               :consistency-level :bounded}))
+                         coll-name filter-expr limit)))
                     colls)
           {:keys [rows failed]} (fan-out outcomes)]
       (cond-> (-> (mapv schema/record->entry rows)
@@ -346,7 +362,8 @@
    [:entry-count [:maybe [:int {:min 0}]]]
    [:collections [:map-of :string [:int {:min 0}]]]
    [:errors [:vector CollectionCountFailure]]
-   [:supports-search? :boolean]])
+   [:supports-search? :boolean]
+   [:capabilities [:vector :keyword]]])
 
 (defn- collection-count
   [collection-name]
@@ -374,6 +391,11 @@
       {:collection collection-name
        :error (or (ex-message e) (str (class e)))})))
 
+(def capabilities
+  "What callers may rely on beyond the port. :embed-text: an entry's transient
+   :embed-text is embedded in place of its :content and never stored."
+  [:embed-text])
+
 (defn store-status
   [config-atom]
   (resilient config-atom
@@ -386,7 +408,8 @@
        :collections coll-counts
        :errors errors
        :supports-search? (and (boolean (milvus/connected?))
-                              (supports-semantic-search? config-atom))})))
+                              (supports-semantic-search? config-atom))
+       :capabilities capabilities})))
 
 (m/=> store-status [:=> [:cat :any] StoreStatus])
 

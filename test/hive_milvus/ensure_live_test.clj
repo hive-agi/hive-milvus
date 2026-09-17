@@ -1,99 +1,75 @@
 (ns hive-milvus.ensure-live-test
-  "Unit tests for the preemptive liveness check (`ensure-live!`) added to
-   the `resilient` macro in hive-milvus.store.
+  "Unit tests for the preemptive liveness gate, `resilience.retry/ensure-live!`.
 
-   These tests exercise the cache + kick-reconnect path in isolation —
-   no live Milvus required. They use with-redefs to stub milvus/connected?,
-   milvus/disconnect!, and start-reconnect-loop!."
+   No live Milvus required: the gate's only two collaborators are
+   `probe/alive?` (a cached boolean) and `reconnect/kick!` (an effect), and
+   both are redefined here.
+
+   The gate's contract is three clauses:
+     alive                      -> true,  no kick
+     dead, loop dormant         -> false, exactly one kick
+     dead, loop already running -> false, no kick
+   plus totality: a probe that throws counts as dead rather than escaping."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [hive-milvus.store.health :as health]
-            [milvus-clj.api :as milvus]))
+            [hive-milvus.resilience.probe :as probe]
+            [hive-milvus.resilience.reconnect :as reconnect]
+            [hive-milvus.resilience.retry :as retry]))
 
-;; Grab vars by name — tests live in a sibling ns.
-;; These were moved to hive-milvus.store.health during the store.clj split;
-;; they remain re-exported from hive-milvus.store for downstream callers.
-(def health-cache            @#'health/health-cache)
-(def health-cache-ttl-ms     @#'health/health-cache-ttl-ms)
-(def ensure-live!            @#'health/ensure-live!)
-(def kick-reconnect-now!     @#'health/kick-reconnect-now!)
-(def invalidate-health-cache! @#'health/invalidate-health-cache!)
-(def reconnect-state         @#'health/reconnect-state)
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: MIT
 
 (defn- reset-state! [f]
-  (reset! health-cache {:ts 0 :alive? false})
-  (reset! reconnect-state {:running? false :future nil :last-attempt nil})
+  (reset! reconnect/reconnect-state {:running? false :future nil :last-attempt nil})
   (f))
 
 (use-fixtures :each reset-state!)
 
-(deftest cache-hit-skips-check
-  (testing "fresh positive cache → no call to milvus/connected?"
-    (let [calls (atom 0)]
-      (reset! health-cache {:ts (System/currentTimeMillis) :alive? true})
-      (with-redefs [milvus/connected? (fn [] (swap! calls inc) true)
-                    milvus/disconnect! (fn [] nil)]
-        (is (true? (ensure-live! (atom {}))))
-        (is (zero? @calls) "connected? must not be called on cache hit")))))
+(defn- with-probe
+  "Run `f` with `probe/alive?` answering `alive-fn` and `reconnect/kick!`
+   counting into an atom. Returns [result kick-count]."
+  [alive-fn f]
+  (let [kicks (atom 0)]
+    (with-redefs [probe/alive?    alive-fn
+                  reconnect/kick! (fn [_] (swap! kicks inc) nil)]
+      [(f) @kicks])))
 
-(deftest cache-miss-triggers-recheck
-  (testing "stale cache → re-verifies via milvus/connected?"
-    (let [calls (atom 0)]
-      (reset! health-cache {:ts 0 :alive? true}) ; stale — ts way in past
-      (with-redefs [milvus/connected? (fn [] (swap! calls inc) true)
-                    milvus/disconnect! (fn [] nil)]
-        (is (true? (ensure-live! (atom {}))))
-        (is (= 1 @calls))
-        (is (true? (:alive? @health-cache)))))))
+(deftest alive-probe-returns-true-and-does-not-kick
+  (testing "a live client needs no healing"
+    (let [[result kicks] (with-probe (constantly true)
+                                     #(retry/ensure-live! (atom {})))]
+      (is (true? result))
+      (is (zero? kicks) "kick! must not run while the client is alive"))))
 
-(deftest dead-client-kicks-reconnect
-  (testing "milvus/connected? = false → kick-reconnect-now! runs"
-    (let [disconnect-calls (atom 0)
-          loop-calls (atom 0)]
-      (with-redefs [milvus/connected?          (fn [] false)
-                    milvus/disconnect!         (fn [] (swap! disconnect-calls inc))
-                    health/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
-        (is (false? (ensure-live! (atom {}))))
-        (is (= 1 @disconnect-calls) "dead client must be dropped")
-        (is (= 1 @loop-calls)       "reconnect loop must be started")
-        (is (false? (:alive? @health-cache)))))))
+(deftest dead-probe-kicks-the-reconnect-loop
+  (testing "a dead client starts healing before the caller's RPC fails"
+    (let [[result kicks] (with-probe (constantly false)
+                                     #(retry/ensure-live! (atom {})))]
+      (is (false? result))
+      (is (= 1 kicks) "a dormant loop must be kicked exactly once"))))
 
-(deftest running-loop-not-double-kicked
-  (testing "reconnect loop already running → kick is a no-op"
-    (let [loop-calls (atom 0)]
-      (swap! reconnect-state assoc :running? true)
-      (with-redefs [milvus/connected?          (fn [] false)
-                    milvus/disconnect!         (fn [] nil)
-                    health/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
-        (ensure-live! (atom {}))
-        (is (zero? @loop-calls) "must not start a second reconnect loop")))))
+(deftest running-loop-is-not-double-kicked
+  (testing "kick is suppressed while the loop is already running"
+    (swap! reconnect/reconnect-state assoc :running? true)
+    (let [[result kicks] (with-probe (constantly false)
+                                     #(retry/ensure-live! (atom {})))]
+      (is (false? result))
+      (is (zero? kicks) "must not start a second reconnect loop"))))
 
-(deftest cache-ttl-window
-  (testing "positive reading within TTL is trusted; outside TTL re-checks"
-    (let [calls (atom 0)
-          now   (System/currentTimeMillis)]
-      (reset! health-cache {:ts (- now 1000) :alive? true}) ; 1s ago — fresh
-      (with-redefs [milvus/connected? (fn [] (swap! calls inc) true)
-                    milvus/disconnect! (fn [] nil)]
-        (ensure-live! (atom {}))
-        (is (zero? @calls)))
-      (reset! health-cache {:ts (- now health-cache-ttl-ms 500) :alive? true}) ; stale
-      (with-redefs [milvus/connected? (fn [] (swap! calls inc) true)
-                    milvus/disconnect! (fn [] nil)]
-        (ensure-live! (atom {}))
-        (is (= 1 @calls))))))
+(deftest a-throwing-probe-counts-as-dead
+  (testing "ensure-live! is total: it never propagates the probe's throwable"
+    (let [[result kicks] (with-probe (fn [] (throw (RuntimeException. "boom")))
+                                     #(retry/ensure-live! (atom {})))]
+      (is (false? result)
+          "a probe that cannot vouch for the client reads as dead")
+      (is (= 1 kicks) "and healing starts, exactly as for any dead reading"))))
 
-(deftest invalidate-forces-recheck
-  (testing "invalidate-health-cache! resets alive? so next call re-verifies"
-    (reset! health-cache {:ts (System/currentTimeMillis) :alive? true})
-    (invalidate-health-cache!)
-    (is (false? (:alive? @health-cache)))
-    (is (zero?  (:ts @health-cache)))))
-
-(deftest connected-check-exception-is-safe
-  (testing "milvus/connected? throwing → treated as dead, kicks reconnect"
-    (let [loop-calls (atom 0)]
-      (with-redefs [milvus/connected?          (fn [] (throw (RuntimeException. "boom")))
-                    milvus/disconnect!         (fn [] nil)
-                    health/start-reconnect-loop! (fn [& _] (swap! loop-calls inc))]
-        (is (false? (ensure-live! (atom {}))))
-        (is (= 1 @loop-calls))))))
+(deftest gate-does-not-block-on-recovery
+  (testing "ensure-live! returns immediately, it does not await the loop"
+    (let [start (System/nanoTime)
+          [result _] (with-probe (constantly false)
+                                 #(retry/ensure-live! (atom {})))
+          elapsed-ms (/ (- (System/nanoTime) start) 1e6)]
+      (is (false? result))
+      (is (< elapsed-ms 500)
+          "the reactive path owns the retry budget, the gate must not wait"))))

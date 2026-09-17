@@ -6,7 +6,7 @@
 
    Requires a running Milvus instance (k8s port-forward or local)."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [hive-mcp.memory.store.contract-test :as contract]
+            [hive-test.memory.store-contract :as contract]
             [hive-milvus.store :as milvus-store]
             [hive-spi.memory.ports :as proto]))
 
