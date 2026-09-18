@@ -27,6 +27,17 @@
             [hive-milvus.relocate-addon :as reloc-addon]
             [hive-milvus.embed.adapter :as embed-adapter]))
 
+(defn- install-vector-store!
+  "Register this addon as the host's IVectorCollectionStore (the primary
+   wiring path in the host's composition root: an addon-installed store wins,
+   and the composition root never learns the vendor's name). Late-bound: the
+   host port namespace is a runtime presence, not a compile dependency."
+  []
+  (let [set-store! @(requiring-resolve 'hive-mcp.protocols.vector/set-store!)
+        factory     @(requiring-resolve 'hive-milvus.vector-store/milvus-vector-store)]
+    (set-store! (factory)))
+  nil)
+
 (defrecord MilvusAddon [store-atom]
   addon-proto/IAddon
 
@@ -64,6 +75,12 @@
                     (catch Throwable e
                       (log/warn "Relocate addon install! failed (non-fatal):"
                                 (.getMessage e))))
+                  (try
+                    (install-vector-store!)
+                    (catch Throwable e
+                      (log/warn "Vector-collection store install failed (non-fatal);"
+                                "the host's :services :vector-store :adapter config"
+                                "path remains the fallback:" (.getMessage e))))
                   (log/info "MilvusAddon initialized — set as active memory store"
                             {:host (:host resolved)
                              :port (:port resolved)
