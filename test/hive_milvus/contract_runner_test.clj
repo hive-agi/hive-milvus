@@ -1,4 +1,4 @@
-(ns hive-milvus.contract-runner-test
+(ns ^:live hive-milvus.contract-runner-test
   "Runs the backend-agnostic contract tests against MilvusMemoryStore.
 
    Binds contract/*store-factory* so the parameterized tests in

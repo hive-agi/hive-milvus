@@ -49,7 +49,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defspec ref-for-dim-self-consistent 200
-  (prop/for-all [dim (gen/such-that pos? gen/small-integer)]
+  ;; `(such-that pos? small-integer)` exhausts its 10 tries at size 0, where
+  ;; small-integer only yields 0 — an intermittent generator ERROR, not a
+  ;; property failure. Constructing the positives is total.
+  (prop/for-all [dim (gen/fmap inc gen/nat)]
     (let [ref (naming/ref-for-dim dim)]
       (and (= dim (:coll/dim ref))
            (string? (:coll/name ref))

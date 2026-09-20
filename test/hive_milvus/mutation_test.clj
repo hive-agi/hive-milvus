@@ -1,4 +1,4 @@
-(ns hive-milvus.mutation-test
+(ns ^:live hive-milvus.mutation-test
   "Mutation tests for MilvusMemoryStore — verify tests catch specific bug classes.
 
    Each mutation simulates a real bug (data loss, wrong conversion, etc.)

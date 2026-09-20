@@ -4,7 +4,7 @@
  :with-tags "tags like \"%migration%\" and tags like \"%kg%\"",
  :exclude-tags "not (tags like \"%carto%\")",
  :with-expiry
- "type == \"note\" and (expires == \"\" or expires > \"2026-07-12T14:15:06.328692030-03:00[America/Fortaleza]\")",
+ "type == \"note\" and (expires == \"\" or expires > \"2026-01-01T00:00Z[UTC]\")",
  :empty nil,
  :combined
- "type == \"decision\" and project_id == \"hive-mcp\" and tags like \"%architecture%\" and not (tags like \"%deprecated%\") and (expires == \"\" or expires > \"2026-07-12T14:15:06.328744146-03:00[America/Fortaleza]\")"}
+ "type == \"decision\" and project_id == \"hive-mcp\" and tags like \"%architecture%\" and not (tags like \"%deprecated%\") and (expires == \"\" or expires > \"2026-01-01T00:00Z[UTC]\")"}

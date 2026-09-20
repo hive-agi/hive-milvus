@@ -16,7 +16,7 @@
 
    No real milvus connection. We stub via `with-redefs` of
    `milvus-clj.api/connect!` + `resilience.probe/probe-once!`."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-dsl.result :as r]
             [hive-milvus.resilience.probe :as probe]
             [hive-milvus.resilience.reconnect :as reconnect]
@@ -30,6 +30,23 @@
 ;; =============================================================================
 ;; Stubs implementing ILivenessProbe
 ;; =============================================================================
+
+(defn- clear-reconnect-loop!
+  "Return the reconnect singleton to its at-rest state."
+  []
+  (reconnect/stop!)
+  (some-> (:future @reconnect/reconnect-state) future-cancel)
+  (reset! reconnect/reconnect-state
+          {:running? false :future nil :last-attempt nil :attempt 0}))
+
+;; `reconnect-state` is a defonce singleton and `kick!` is idempotent, so a
+;; loop left running by an earlier test turns `kick!` here into a silent
+;; no-op and the call-count assertions read zero. Order- and timing-
+;; dependent, hence intermittent.
+(use-fixtures :each
+  (fn [f]
+    (clear-reconnect-loop!)
+    (try (f) (finally (clear-reconnect-loop!)))))
 
 (defn- live-stub
   "Reified ILivenessProbe that always returns truthy."
@@ -87,7 +104,11 @@
   (testing "the regression: try-reconnect-and-verify! returns false when
             connect! 'succeeds' (atom set) but the probe round-trip fails"
     (let [connect-calls (atom 0)
-          probe-calls   (atom 0)]
+          probe-calls   (atom 0)
+          ;; The heal loop is async. A fixed Thread/sleep raced it and the
+          ;; assertions read 0 calls whenever the loop had not run yet, so
+          ;; the probe itself signals when it has been reached.
+          probed        (promise)]
       (with-redefs [milvus/connect!     (fn [_cfg]
                                           (swap! connect-calls inc)
                                           ;; Returns whatever — historic
@@ -97,21 +118,15 @@
                                           :stub-client)
                     probe/probe-once!   (fn []
                                           (swap! probe-calls inc)
+                                          (deliver probed true)
                                           ;; Server still unreachable.
                                           false)]
-        ;; Drive one heal-loop iteration synchronously by calling the
-        ;; private helper through reflection-free reify of the public
-        ;; surface: kick! + immediate await with zero-budget. Because
-        ;; the loop is async we cannot directly assert its success
-        ;; criterion from here without racing — instead, prove the
-        ;; building block: a single attempt that connects but fails
-        ;; the probe must report not-recovered.
         (let [config-atom (atom {:transport :http :host "stub" :port 19530})
-              ;; await with budget 0 — should immediately reflect
-              ;; probe-once!'s return value.
-              recovered? (do (reconnect/kick! config-atom)
-                             (Thread/sleep 50) ;; let kick fire connect+probe
-                             (reconnect/await! 0))]
+              _           (reconnect/kick! config-atom)
+              fired?      (deref probed 5000 false)
+              recovered?  (reconnect/await! 0)]
+          (is fired?
+              "heal loop reached probe-once! within the budget")
           (is (= 1 @connect-calls)
               "connect! invoked exactly once on kick path")
           (is (pos? @probe-calls)

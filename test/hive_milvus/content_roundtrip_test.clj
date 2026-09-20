@@ -39,6 +39,33 @@
      :unhelpful_count 0
      :project_id "test"}))
 
+(def gen-milvus-row-kanban-content
+  "Generator for Milvus rows that really are kanban tasks.
+
+   Distinct from gen-milvus-row-with-json-content, which varies :task-type
+   across kanban/note/plan — a row whose task-type is \"note\" is not a
+   counterexample to the kanban accessor, so the kanban property needs rows
+   that are kanban by construction."
+  (gen/let [title gen/string-alphanumeric
+            status (gen/elements ["todo" "doing" "review" "done"])
+            priority (gen/elements ["high" "medium" "low"])]
+    {:id "gen-test"
+     :type "note"
+     :content (json/write-str {:task-type "kanban"
+                               :title title
+                               :status status
+                               :priority priority})
+     :tags "[\"kanban\"]"
+     :content_hash ""
+     :created "2026-04-08T00:00:00Z"
+     :updated "2026-04-08T00:00:00Z"
+     :duration "short"
+     :expires ""
+     :access_count 0
+     :helpful_count 0
+     :unhelpful_count 0
+     :project_id "test"}))
+
 (def gen-milvus-row-plain-string
   "Generator for Milvus rows whose :content is a plain string."
   (gen/let [content gen/string-alphanumeric]
@@ -132,7 +159,7 @@
                                 :access_count 0 :helpful_count 0
                                 :unhelpful_count 0 :project_id "hive-mcp"}}
    :xf          (fn [entry] (kanban-task-type? (:content entry)))
-   :gen         gen-milvus-row-with-json-content
+   :gen         gen-milvus-row-kanban-content
    :pred        (fn [entry] (kanban-task-type? (:content entry)))
    :num-tests   100
    :mutations   [["raw-string-content"

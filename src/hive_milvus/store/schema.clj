@@ -8,16 +8,20 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [hive-milvus.embedder :as embedder]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [hive-ttracking.clock :as clock]))
 
 ;; =========================================================================
 ;; Pure Calculations
 ;; =========================================================================
 
 (defn now-iso
-  "Current ISO 8601 timestamp string."
+  "Current ISO 8601 timestamp string.
+
+   Time discipline: routes wall-clock through `hive-ttracking.clock` so tests
+   can pin time."
   []
-  (str (java.time.ZonedDateTime/now (java.time.ZoneId/systemDefault))))
+  (str (clock/now-zoned-date-time)))
 
 (defn- generate-id
   "Generate a unique timestamped ID for memory entries."

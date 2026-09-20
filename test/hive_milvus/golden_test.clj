@@ -5,7 +5,8 @@
    unintended behavioral changes during refactoring."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-test.golden :as golden]
-            [hive-milvus.store :as milvus-store]))
+            [hive-milvus.store :as milvus-store]
+            [hive-ttracking.clock :as clock]))
 
 ;; =============================================================================
 ;; Golden: tags serialization shape
@@ -81,27 +82,32 @@
 
 (golden/deftest-golden filter-expr-shapes
   "test/golden/milvus/filter-expressions.edn"
-  {:type-only     (milvus-store/build-filter-expr
-                    {:type :decision :include-expired? true})
-   :project-id    (milvus-store/build-filter-expr
-                    {:project-id "hive-mcp" :include-expired? true})
-   :project-ids   (milvus-store/build-filter-expr
-                    {:project-ids ["hive-mcp" "hive-test"]
-                     :include-expired? true})
-   :with-tags     (milvus-store/build-filter-expr
-                    {:tags ["migration" "kg"] :include-expired? true})
-   :exclude-tags  (milvus-store/build-filter-expr
-                    {:exclude-tags ["carto"] :include-expired? true})
-   :with-expiry   (milvus-store/build-filter-expr
-                    {:type :note :include-expired? false})
-   :empty         (milvus-store/build-filter-expr
-                    {:include-expired? true})
-   :combined      (milvus-store/build-filter-expr
-                    {:type :decision
-                     :project-id "hive-mcp"
-                     :tags ["architecture"]
-                     :exclude-tags ["deprecated"]
-                     :include-expired? false})})
+  ;; :with-expiry and :combined embed `now`, so the clock is pinned in an
+  ;; EXPLICIT zone — with-fixed alone renders in the host zone and the
+  ;; snapshot would differ between a local run and CI.
+  (clock/with-fixed-in-zone (java.time.Instant/parse "2026-01-01T00:00:00Z")
+                            (java.time.ZoneId/of "UTC")
+    {:type-only     (milvus-store/build-filter-expr
+                      {:type :decision :include-expired? true})
+     :project-id    (milvus-store/build-filter-expr
+                      {:project-id "hive-mcp" :include-expired? true})
+     :project-ids   (milvus-store/build-filter-expr
+                      {:project-ids ["hive-mcp" "hive-test"]
+                       :include-expired? true})
+     :with-tags     (milvus-store/build-filter-expr
+                      {:tags ["migration" "kg"] :include-expired? true})
+     :exclude-tags  (milvus-store/build-filter-expr
+                      {:exclude-tags ["carto"] :include-expired? true})
+     :with-expiry   (milvus-store/build-filter-expr
+                      {:type :note :include-expired? false})
+     :empty         (milvus-store/build-filter-expr
+                      {:include-expired? true})
+     :combined      (milvus-store/build-filter-expr
+                      {:type :decision
+                       :project-id "hive-mcp"
+                       :tags ["architecture"]
+                       :exclude-tags ["deprecated"]
+                       :include-expired? false})}))
 
 ;; =============================================================================
 ;; Golden: helpfulness-map calculation

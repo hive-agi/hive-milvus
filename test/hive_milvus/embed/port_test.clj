@@ -27,7 +27,10 @@
   (is (instance? hive_milvus.embed.adapter.HiveMcpEmbedder
                  (port/current)))
   (is (satisfies? port/IEmbedder (port/current)))
-  (is (seq (port/collection-names))))
+  ;; Contract, not configuration: which collections exist is host state, and
+  ;; a bare test JVM has none. Asserting non-emptiness here made the test a
+  ;; probe of the environment rather than of the installed adapter.
+  (is (sequential? (port/collection-names))))
 
 (deftest protocol-identity-survives-reload
   (adapter/install!)

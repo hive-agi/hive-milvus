@@ -1,4 +1,4 @@
-(ns hive-milvus.property-test
+(ns ^:live hive-milvus.property-test
   "Property-based tests for MilvusMemoryStore.
 
    Uses hive-test generators and property macros to verify algebraic

@@ -1,4 +1,4 @@
-(ns hive-milvus.consistency-test
+(ns ^:live hive-milvus.consistency-test
   "Golden, property, and mutation tests for Milvus consistency fixes.
 
    Tests the ensure-collection! load-on-reconnect behavior and
