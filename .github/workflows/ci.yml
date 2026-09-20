@@ -1,0 +1,49 @@
+name: ci
+
+# Guards the failure this repo actually hit: hive-milvus only ever compiled
+# inside hive-mcp's dep tree, where the host's newer resolutions won, so its
+# OWN declared pins drifted into fiction and the published artifact was not
+# installable as declared. A CI checkout has no local.deps.edn (untracked),
+# so every step here resolves the DECLARED deps and nothing else.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'resources/**'
+      - 'deps.edn'
+      - '.github/workflows/ci.yml'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  standalone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          cli: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ hashFiles('deps.edn') }}
+          restore-keys: m2-
+
+      - name: Resolve declared deps
+        run: clojure -Spath > /dev/null
+
+      - name: Build jar
+        run: clojure -T:build jar
+
+      # ^:live namespaces need a reachable Milvus at localhost:19530 and are
+      # skipped here; everything else must pass against the declared pins.
+      - name: Unit tests
+        run: clojure -M:test --skip-meta :live
