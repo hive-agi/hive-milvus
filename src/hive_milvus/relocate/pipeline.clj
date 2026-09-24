@@ -54,51 +54,59 @@
 
 (defn place-one
   "Put the entry at `id` into its canonical collection, then let `disposition`
-   decide what happens to the source row.
+   decide what happens to the source row. `overrides` (optional) is merged
+   into the collected entry before it is re-embedded: `{:embed-text s}` lets
+   a caller whose stored `:content` is not embeddable (a store decorator that
+   encrypts at rest) supply the text; `:embed-text` never reaches the record.
 
    Returns:
      (r/ok {:placed? true  :source-kept? bool :from src :to target :id id})
      (r/ok {:placed? false :from src :to target :id id})          on no-op
      (r/err :collector/not-found | :routing/no-target |
-            :embedder/embed-failed | :boundary/milvus-write-failed | …)
+            :embedder/embed-failed | :boundary/milvus-write-failed | ...)
 
    Idempotent: the target write is an upsert, and an entry already in its
    canonical collection is a no-op."
-  [config-atom id disposition]
-  (r/let-ok
-    [bundle-collected (col-entry/collect-existing-entry {:config-atom config-atom :id id})
-     bundle-targeted  (p-routing/compute-target bundle-collected)
-     bundle-classed   (p-routing/classify-relocation-need bundle-targeted)]
-    (case (:relocation bundle-classed)
-      :no-op
-      (r/ok {:placed? false
-             :from    (:src-coll bundle-classed)
-             :to      (:target-coll bundle-classed)
-             :id      id})
+  ([config-atom id disposition] (place-one config-atom id disposition nil))
+  ([config-atom id disposition overrides]
+   (r/let-ok
+     [bundle-collected (col-entry/collect-existing-entry {:config-atom config-atom :id id})
+      bundle-targeted  (p-routing/compute-target
+                        (cond-> bundle-collected
+                          (seq overrides) (update :entry merge overrides)))
+      bundle-classed   (p-routing/classify-relocation-need bundle-targeted)]
+     (case (:relocation bundle-classed)
+       :no-op
+       (r/ok {:placed? false
+              :from    (:src-coll bundle-classed)
+              :to      (:target-coll bundle-classed)
+              :id      id})
 
-      :move
-      (r/let-ok
-        [bundle-ensured  (boundary/ensure-target-collection bundle-classed)
-         bundle-recorded (p-record/build-target-record bundle-ensured)
-         bundle-written  (boundary/milvus-write! (r/ok bundle-recorded))
-         bundle-final    (-after-write disposition bundle-written)]
-        (r/ok (cond-> {:placed?      true
-                       :source-kept? (= :copy (-describe-disposition disposition))
-                       :from         (:src-coll bundle-final)
-                       :to           (:target-coll bundle-final)
-                       :id           id}
-                (:src-delete-failed? bundle-final)
-                (assoc :src-delete-failed? true
-                       :src-delete-error (:src-delete-error bundle-final))))))))
+       :move
+       (r/let-ok
+         [bundle-ensured  (boundary/ensure-target-collection bundle-classed)
+          bundle-recorded (p-record/build-target-record bundle-ensured)
+          bundle-written  (boundary/milvus-write! (r/ok bundle-recorded))
+          bundle-final    (-after-write disposition bundle-written)]
+         (r/ok (cond-> {:placed?      true
+                        :source-kept? (= :copy (-describe-disposition disposition))
+                        :from         (:src-coll bundle-final)
+                        :to           (:target-coll bundle-final)
+                        :id           id}
+                 (:src-delete-failed? bundle-final)
+                 (assoc :src-delete-failed? true
+                        :src-delete-error (:src-delete-error bundle-final)))))))))
 
 (defn relocate-one
   "Relocate the entry at `id` to its canonical collection, REMOVING it from the
-   source. See `place-one`; `:moved?` mirrors `:placed?` for legacy callers."
-  [config-atom id]
-  (let [res (place-one config-atom id (delete-source))]
-    (if (r/ok? res)
-      (r/ok (let [v (:ok res)] (assoc v :moved? (:placed? v))))
-      res)))
+   source. See `place-one` (and its `overrides`); `:moved?` mirrors `:placed?`
+   for legacy callers."
+  ([config-atom id] (relocate-one config-atom id nil))
+  ([config-atom id overrides]
+   (let [res (place-one config-atom id (delete-source) overrides)]
+     (if (r/ok? res)
+       (r/ok (let [v (:ok res)] (assoc v :moved? (:placed? v))))
+       res))))
 
 (defn copy-one
   "Copy the entry at `id` into its canonical collection, LEAVING the source row

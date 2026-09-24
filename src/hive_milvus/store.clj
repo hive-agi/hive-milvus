@@ -170,6 +170,18 @@
   (-await-reconnect! [_this budget-ms]
     (reconnect/await! budget-ms)))
 
+;; -------------------------------------------------------------------------
+;; IMemoryStoreRoutingEmbedText: relocation for a decorated store whose
+;; stored content is not embeddable. Bound only when the hive-spi on the
+;; classpath declares it, so this builds against an older hive-spi.
+;; -------------------------------------------------------------------------
+
+(when-let [p (some-> (ns-resolve 'hive-spi.memory.ports 'IMemoryStoreRoutingEmbedText) deref)]
+  (extend MilvusMemoryStore
+    p
+    {:relocate-entry-with! (fn [this id opts]
+                             (entries/relocate-entry! (:config-atom this) id opts))}))
+
 (defn create-store
   "Create a new Milvus-backed memory store.
 

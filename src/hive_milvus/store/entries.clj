@@ -127,10 +127,12 @@
 
 (defn relocate-entry!
   "Move entry `id` from its current collection to the canonical target.
-   Implements `IMemoryStoreWithRouting/relocate-entry!`.
+   Implements `IMemoryStoreWithRouting/relocate-entry!`, and with `opts`
+   `IMemoryStoreRoutingEmbedText/relocate-entry-with!`: `(:embed-text opts)`
+   is embedded in place of the stored content, and never stored.
 
    Delegates to `hive-milvus.relocate.pipeline/relocate-one`, which is
-   the CPPB-layered (Collect → Promote → Boundary) implementation.
+   the CPPB-layered (Collect -> Promote -> Boundary) implementation.
    This wrapper unwraps the pipeline's r/ok / r/err result back into
    the legacy raw-map shape callers expect:
 
@@ -143,19 +145,20 @@
 
    Migration path: callers that want railway-tracked errors should
    call `reloc-pipeline/relocate-one` directly instead of this
-   facade — they get an r/ok / r/err with full error context."
-  [config-atom id]
-  (let [res (reloc-pipeline/relocate-one config-atom id)]
-    (cond
-      (r/ok? res)
-      (:ok res)
+   facade; they get an r/ok / r/err with full error context."
+  ([config-atom id] (relocate-entry! config-atom id nil))
+  ([config-atom id opts]
+   (let [res (reloc-pipeline/relocate-one config-atom id (select-keys opts [:embed-text]))]
+     (cond
+       (r/ok? res)
+       (:ok res)
 
-      (= :collector/not-found (:error res))
-      {:moved? false :from nil :to nil :id id :reason :not-found}
+       (= :collector/not-found (:error res))
+       {:moved? false :from nil :to nil :id id :reason :not-found}
 
-      :else
-      {:moved? false :error (:error res) :id id
-       :detail (dissoc res :error)})))
+       :else
+       {:moved? false :error (:error res) :id id
+        :detail (dissoc res :error)}))))
 
 (def FanOutOutcome
   "What one collection contributed to a fan-out: its rows, and — when it could

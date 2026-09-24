@@ -19,7 +19,8 @@
             [hive-milvus.relocate.pipeline :as p]
             [hive-milvus.relocate.promoters.record :as p-record]
             [hive-milvus.relocate.promoters.routing :as p-routing]
-            [hive-test.trifecta :refer [deftrifecta]]))
+            [hive-test.trifecta :refer [deftrifecta]]
+            [hive-milvus.embedder]))
 
 ;; ============================================================
 ;; Harness — single-arg fn so `deftrifecta` can target it directly
@@ -169,3 +170,49 @@
           "captured record must carry the updated tags")
       (is (= (:content updates) (:content captured))
           "captured record must carry the updated content"))))
+
+;; ============================================================
+;; Relocation with a caller's embed text (IMemoryStoreRoutingEmbedText)
+;; ============================================================
+
+(deftest relocation-embeds-the-callers-text-and-never-stores-it
+  (testing "a store decorator whose :content is ciphertext supplies what to embed"
+    (let [embedded (atom nil)
+          written  (atom nil)
+          entry    {:id "w1" :type "note" :content "WORK-SEALED-CIPHERTEXT" :tags ["t"]}]
+      (with-redefs
+        [col-entry/collect-existing-entry
+         (fn [_] (r/ok {:id "w1" :src-coll "old-coll" :entry entry :config-atom :stub}))
+
+         p-routing/compute-target
+         (fn [bundle] (r/ok (assoc bundle :target-coll "new-coll")))
+
+         p-routing/classify-relocation-need
+         (fn [bundle] (r/ok (assoc bundle :relocation :move)))
+
+         boundary/ensure-target-collection
+         (fn [bundle] (r/ok bundle))
+
+         hive-milvus.embedder/embed-for-entry
+         (fn [e _coll] (reset! embedded e) (r/ok [0.5]))
+
+         boundary/milvus-write!
+         (fn [bundle-result] (reset! written (:record (:ok bundle-result))) bundle-result)
+
+         boundary/milvus-delete!
+         (fn [bundle-result] bundle-result)]
+        (let [res (p/relocate-one :stub "w1" {:embed-text "quarterly numbers"})]
+          (is (r/ok? res))
+          (is (true? (:moved? (:ok res))))
+          (is (= "quarterly numbers" (:embed-text @embedded)) "the embedder sees the caller's text")
+          (is (= "WORK-SEALED-CIPHERTEXT" (:content @written)) "the stored content is untouched")
+          (is (not (contains? @written :embed-text)) "the embed text never reaches the record")))))
+  (testing "without overrides relocation is unchanged"
+    (let [seen (atom nil)]
+      (with-redefs
+        [col-entry/collect-existing-entry
+         (fn [_] (r/ok {:id "p1" :src-coll "c" :entry {:id "p1" :content "plain"} :config-atom :stub}))
+         p-routing/compute-target (fn [bundle] (reset! seen (:entry bundle)) (r/ok (assoc bundle :target-coll "c")))
+         p-routing/classify-relocation-need (fn [bundle] (r/ok (assoc bundle :relocation :no-op)))]
+        (is (false? (:moved? (:ok (p/relocate-one :stub "p1")))))
+        (is (= {:id "p1" :content "plain"} @seen))))))
