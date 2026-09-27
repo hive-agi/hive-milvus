@@ -28,6 +28,16 @@
       (vec (sort-by field cmp entries)))
     entries))
 
+(defn scan-ids
+  "Every entry id across the collections this store reads, each once; expired
+   ones only with :include-expired?. Raises rather than truncating."
+  [config-atom {:keys [include-expired?]}]
+  (let [base (schema/build-filter-expr {:include-expired? include-expired?})]
+    (->> (lookup/known-collections config-atom)
+         (mapcat #(enumerate/all-ids % base))
+         distinct
+         vec)))
+
 (defn add-entry!
   [config-atom entry]
   (resilient config-atom

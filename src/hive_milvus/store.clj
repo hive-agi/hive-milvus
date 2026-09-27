@@ -182,6 +182,12 @@
     {:relocate-entry-with! (fn [this id opts]
                              (entries/relocate-entry! (:config-atom this) id opts))}))
 
+(when-let [p (some-> (ns-resolve 'hive-spi.memory.ports 'IMemoryStoreScan) deref)]
+  (extend MilvusMemoryStore
+    p
+    {:scan-ids (fn [this opts]
+                 (entries/scan-ids (:config-atom this) opts))}))
+
 (defn create-store
   "Create a new Milvus-backed memory store.
 
