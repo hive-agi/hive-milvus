@@ -21,11 +21,12 @@
             [hive-milvus.collection.naming :as naming]
             [taoensso.timbre :as log]))
 
-(defn- ^String entry->content
+(defn ^String text-to-embed
   "The text to embed for `entry`: its transient `:embed-text` when a caller
    supplied one (a store decorator whose `:content` is ciphertext), else
    `:content` coerced to a string, maps JSON-encoded. `:embed-text` is never
-   written to the record."
+   written to the record. Pure: two entries with equal text get equal vectors
+   in one collection, which is what lets an update keep the stored one."
   [entry]
   (let [embed-text (:embed-text entry)
         raw        (or (:content entry) "")]
@@ -56,7 +57,7 @@
 
 (defn- embed-for-entry*
   [entry collection-name]
-  (let [content (entry->content entry)]
+  (let [content (text-to-embed entry)]
     (cond
       (str/blank? content)
       (r/ok [])

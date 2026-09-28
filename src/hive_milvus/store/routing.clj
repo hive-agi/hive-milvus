@@ -55,7 +55,7 @@
 
 (defn- entry-content-str
   "Coerce an entry's :content to a string for size estimation. Mirrors
-   `hive-milvus.embedder/entry->content` exactly (JSON for maps) so the
+   `hive-milvus.embedder/text-to-embed` for :content (JSON for maps) so the
    escalation decision is identical at the collection-routing and embedding
    sites — keeping the stored vector's dimension coherent with the collection."
   [entry]

@@ -125,6 +125,10 @@
    Replaces the body of `entries/update-entry!` for the routing-aware
    path. Returns r/ok merged-entry on success or r/err on failure.
 
+   An update that stays in place and leaves the text to embed unchanged
+   keeps the stored vector (`boundary/keep-stored-vector`) rather than
+   calling the embedder again.
+
    Note: `relocate-one` only relocates the entry as it CURRENTLY is.
    When updates change the :type and the new :type routes to a
    different collection, we do NOT use relocate-one — we explicitly
@@ -139,13 +143,15 @@
     ;; short-circuits on any binding whose value isn't a Result, so
     ;; raw maps from `merge`/`assoc` would silently abort the pipeline
     ;; before `milvus-write!` ever fires.
-    (let [merged        (merge (:entry bundle-collected) updates)
-          bundle-merged (assoc bundle-collected :entry merged)]
+    (let [existing      (:entry bundle-collected)
+          merged        (merge existing updates)
+          bundle-merged (assoc bundle-collected :entry merged :existing existing)]
       (r/let-ok
         [bundle-targeted (p-routing/compute-target bundle-merged)
          bundle-classed  (p-routing/classify-relocation-need bundle-targeted)
          bundle-ensured  (boundary/ensure-target-collection bundle-classed)
-         bundle-recorded (p-record/build-target-record bundle-ensured)
+         bundle-kept     (boundary/keep-stored-vector bundle-ensured)
+         bundle-recorded (p-record/build-target-record bundle-kept)
          bundle-written  (boundary/milvus-write! (r/ok bundle-recorded))]
         (if (= :no-op (:relocation bundle-classed))
           (r/ok merged)
