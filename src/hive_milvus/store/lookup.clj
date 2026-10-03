@@ -36,11 +36,36 @@
        distinct
        (filterv searchable?)))
 
+(def ^:private missing-collection-markers
+  "Message fragments Milvus (gRPC status 100 / REST code 100, across 2.4-2.6)
+   uses for a collection that does not exist."
+  [#"(?i)collection not found"
+   #"(?i)can't find collection"
+   #"(?i)collection not exist"
+   #"(?i)collection .* does not exist"])
+
+(defn missing-collection?
+  "True when `t`, or any link of its cause chain, says the collection does
+   not exist. A configured collection that was never created (e.g.
+   `hive_mcp_memory_1024d` before its first routed write, or after a failed
+   preload) holds nothing, so asking it is a definite ANSWER - absent - not
+   an outage. Pure."
+  [^Throwable t]
+  (boolean
+   (some (fn [^Throwable link]
+           (when-let [msg (.getMessage link)]
+             (some #(re-find % msg) missing-collection-markers)))
+         (take 10 (take-while some? (iterate #(.getCause ^Throwable %) t))))))
+
 (defn find-entry-collection
   "Locate which known collection holds `id`. Returns the collection
    name or nil. Each lookup is wrapped in try so a missing collection
-   (e.g. `hive_mcp_memory_1024d` before the first qwen3-routed write)
-   doesn't abort the scan."
+   (e.g. `hive_mcp_memory_1024d` before the first qwen3-routed write,
+   see `missing-collection?`) doesn't abort the scan.
+
+   NOTE: this still swallows EVERY per-collection exception, so an outage
+   reads as nil here; `store.entries/locate-entry` is the outcome-honest
+   fold."
   [config-atom id]
   (some (fn [coll]
           (try

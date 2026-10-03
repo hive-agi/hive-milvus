@@ -61,12 +61,14 @@
 
 (def ^:private metrics
   "Cumulative counters for observability. Not reset on drain so operators
-   can see lifetime queue pressure."
-  (atom {:enqueued      0
-         :rejected-full 0
-         :drained-ok    0
-         :drained-fail  0
-         :drain-passes  0}))
+   can see lifetime queue pressure. :drained-dropped counts ops a drain
+   gave up on because their failure was permanent."
+  (atom {:enqueued        0
+         :rejected-full   0
+         :drained-ok      0
+         :drained-fail    0
+         :drained-dropped 0
+         :drain-passes    0}))
 
 (defn size
   "Current queue depth (cheap atom read)."
@@ -224,15 +226,57 @@
 ;; Drain
 ;; =============================================================================
 
+(defn write-failure?
+  "True when a write verb's return value is a refusal: a map whose
+   :success? is false or whose :error is non-nil. That is the shape
+   `resilient` answers once its retry budget is spent, and the shape the
+   circuit breaker answers while open.
+
+   Mirrors `hive-spi.memory.contract/failure?` (hive-spi f9e3025), which no
+   released hive-spi carries yet; switch to it when the pin can move."
+  [x]
+  (and (map? x)
+       (or (false? (:success? x))
+           (some? (:error x)))))
+
+(defn write-outcome
+  "Classify a write verb's return value for the drain:
+
+     :ok     it landed (anything that is not a `write-failure?`, nil included:
+             an update of an unknown id is terminal)
+     :retry  a TRANSIENT refusal - `:reconnecting? true`, which is what a spent
+             `resilient` budget and an open circuit answer. Re-queue it.
+     :drop   a PERMANENT refusal - a fatal failure map (`:reconnecting? false`)
+             or an `{:error ...}` that does not claim to be reconnecting, e.g.
+             `update-entry!`'s routing / embedding / schema errors. Retrying
+             cannot change the answer, so re-queueing would only keep a poison
+             op in the queue forever."
+  [x]
+  (cond
+    (not (write-failure? x)) :ok
+    (true? (:reconnecting? x)) :retry
+    :else :drop))
+
 (defn- run-op
-  "Execute one queued op via `dispatch-fn`. Return `::ok` on success,
-   `::failed` on any thrown exception. bounded-pmap's timeout path
-   returns its own `::failed` fallback, so we converge on the same
-   sentinel for retry logic."
+  "Execute one queued op via `dispatch-fn`. Returns `::ok` when the op
+   landed, `::failed` when it threw or answered a transient `write-outcome`
+   (re-queued), `::dropped` when it answered a permanent one (logged and
+   discarded). A write verb reports a spent retry budget as a value, not a
+   throw, so 'did not throw' is not 'landed'. bounded-pmap's timeout path
+   returns its own `::failed` fallback, so we converge on the same sentinel."
   [dispatch-fn op]
   (try
-    (dispatch-fn op)
-    ::ok
+    (let [r (dispatch-fn op)]
+      (case (write-outcome r)
+        :ok    ::ok
+        :retry (do (log/warn "hive-milvus.queue drain op refused (transient, re-queued):"
+                             (:op op) "/" (:id op)
+                             "—" (pr-str (select-keys r [:error :errors :reconnecting?])))
+                   ::failed)
+        :drop  (do (log/error "hive-milvus.queue drain op refused (permanent, DROPPED):"
+                              (:op op) "/" (:id op)
+                              "—" (pr-str (select-keys r [:error :errors :detail])))
+                   ::dropped)))
     (catch Throwable e
       (log/warn "hive-milvus.queue drain op failed:" (:op op) "/" (:id op)
                 "—" (ex-message e))
@@ -243,9 +287,10 @@
      1. Atomically swap the queue for EMPTY (snapshot the pending batch).
      2. Coalesce the snapshot by (op,id) keeping latest mutation.
      3. Dispatch via `bounded-pmap` with concurrency/timeout.
-     4. Re-enqueue any failed ops at the TAIL for the next pass.
+     4. Re-enqueue transient failures at the TAIL for the next pass;
+        permanent ones (`::dropped`) are logged by `run-op` and discarded.
 
-   Returns a summary `{:attempted :succeeded :failed :failed-ops}`."
+   Returns a summary `{:attempted :succeeded :failed :dropped :failed-ops}`."
   [dispatch-fn]
   (let [[snapshot _] (swap-vals! the-queue (constantly PersistentQueue/EMPTY))
         batch        (coalesce (vec snapshot))
@@ -257,11 +302,10 @@
                         :fallback    ::failed}
                        (partial run-op dispatch-fn)
                        batch)
-        failed-ops   (into []
-                           (keep (fn [[op r]]
-                                   (when (not= r ::ok) op)))
-                           (map vector batch results))
-        ok-cnt       (- (count batch) (count failed-ops))]
+        pairs        (map vector batch results)
+        failed-ops   (into [] (keep (fn [[op r]] (when (= r ::failed) op))) pairs)
+        dropped-cnt  (count (filter #(= ::dropped (second %)) pairs))
+        ok-cnt       (- (count batch) (count failed-ops) dropped-cnt)]
     (when (seq failed-ops)
       ;; Re-queue failures at the tail. New arrivals during the pass
       ;; remain ahead in FIFO — they went straight onto `the-queue`
@@ -271,10 +315,12 @@
                      (-> m
                          (update :drained-ok + ok-cnt)
                          (update :drained-fail + (count failed-ops))
+                         (update :drained-dropped (fnil + 0) dropped-cnt)
                          (update :drain-passes inc))))
     {:attempted  (count batch)
      :succeeded  ok-cnt
      :failed     (count failed-ops)
+     :dropped    dropped-cnt
      :failed-ops failed-ops}))
 
 (defn drain!
@@ -287,23 +333,32 @@
 
    Options (map):
      :dispatch-fn    REQUIRED. (fn [op] ...) that applies one queued op
-                     to Milvus. Throw or return falsey on failure so
-                     the op is re-queued for the next pass. Typically
+                     to Milvus. Signal failure by throwing OR by returning
+                     a `write-failure?` value. `write-outcome` splits it:
+                     a TRANSIENT refusal (`:reconnecting? true` - a spent
+                     `resilient` budget, an open circuit) or a throw is
+                     re-queued for the next pass; a PERMANENT one (a fatal
+                     failure map, `update-entry!`'s routing/schema
+                     `{:error ...}`) is logged and dropped, since retrying
+                     cannot change it. Any other return, nil included
+                     (update of an unknown id), counts as done. Typically
                      built via `make-store-dispatch`.
      :circuit-open?  (fn []) predicate. If it returns truthy between
                      passes, drain stops and leaves the rest queued.
                      Default: never-open (best-effort).
 
+   A pass makes progress when some op landed or was dropped.
+
    Returns `{:result :drained|:circuit-reopened|:all-failed|:already-running
-             :attempted N :succeeded N :failed N :passes N}`."
+             :attempted N :succeeded N :failed N :dropped N :passes N}`."
   [{:keys [dispatch-fn circuit-open?]
     :or   {circuit-open? (constantly false)}}]
   (assert dispatch-fn "drain! requires :dispatch-fn")
   (if-not (compare-and-set! draining? false true)
-    {:result :already-running :attempted 0 :succeeded 0 :failed 0 :passes 0}
+    {:result :already-running :attempted 0 :succeeded 0 :failed 0 :dropped 0 :passes 0}
     (try
       (log/info "hive-milvus.queue drain started — depth" (size))
-      (loop [tot {:attempted 0 :succeeded 0 :failed 0 :passes 0}]
+      (loop [tot {:attempted 0 :succeeded 0 :failed 0 :dropped 0 :passes 0}]
         (cond
           (zero? (size))
           (do (log/info "hive-milvus.queue drain complete —" tot)
@@ -319,8 +374,10 @@
                 tot' {:attempted (+ (:attempted tot) (:attempted pass))
                       :succeeded (+ (:succeeded tot) (:succeeded pass))
                       :failed    (+ (:failed tot) (:failed pass))
+                      :dropped   (+ (:dropped tot) (:dropped pass))
                       :passes    (inc (:passes tot))}]
-            (if (and (pos? (:attempted pass)) (zero? (:succeeded pass)))
+            (if (and (pos? (:attempted pass))
+                     (zero? (+ (:succeeded pass) (:dropped pass))))
               ;; Network still bad — don't spin. Leave failures queued
               ;; for the next circuit transition.
               (do (log/warn "hive-milvus.queue drain pass made zero progress — backing off")
