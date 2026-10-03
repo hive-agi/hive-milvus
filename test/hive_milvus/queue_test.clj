@@ -121,6 +121,46 @@
       (is (= :drained (:result result)))
       (is (zero? (q/size))))))
 
+(deftest drain-requeues-a-write-answered-with-a-failure-map
+  (testing "a spent retry budget answers a value; that value is not success"
+    (q/enqueue! {:op :add-entry! :id "lost" :args [{:id "lost"}]})
+    (let [before (:drained-fail (q/stats))
+          result (q/drain! {:dispatch-fn (constantly {:success?      false
+                                                      :errors        ["x"]
+                                                      :reconnecting? true})})]
+      (is (= :all-failed (:result result)))
+      (is (= 1 (:failed result)))
+      (is (zero? (:succeeded result)))
+      (is (= 1 (q/size)) "the write is back on the queue, not dropped")
+      (is (= (inc before) (:drained-fail (q/stats)))))))
+
+(deftest drain-requeues-a-write-refused-by-an-open-circuit
+  (q/enqueue! {:op :delete-entry! :id "d" :args ["d"]})
+  (let [result (q/drain! {:dispatch-fn (constantly {:success? false
+                                                    :error    :circuit-open
+                                                    :reconnecting? true})})]
+    (is (= 1 (:failed result)))
+    (is (= 1 (q/size)))))
+
+(deftest drain-counts-absent-and-landed-as-done
+  (testing "nil (update of an unknown id) and an id are terminal, not retried"
+    (q/enqueue! {:op :update-entry! :id "gone" :args ["gone" {}]})
+    (q/enqueue! {:op :add-entry! :id "ok" :args [{:id "ok"}]})
+    (let [result (q/drain! {:dispatch-fn (fn [{:keys [op id]}]
+                                           (when (= op :add-entry!) id))})]
+      (is (= :drained (:result result)))
+      (is (= 2 (:succeeded result)))
+      (is (zero? (q/size))))))
+
+(deftest write-failure-classifies-the-spi-failure-shape
+  (is (true? (q/write-failure? {:success? false :errors ["x"]})))
+  (is (true? (q/write-failure? {:error :circuit-open})))
+  (is (false? (q/write-failure? "id")))
+  (is (false? (q/write-failure? nil)))
+  (is (false? (q/write-failure? true)))
+  (is (false? (q/write-failure? {:id "x" :content "c"})))
+  (is (false? (q/write-failure? {:success? true :queued? true}))))
+
 (deftest drain-aborts-when-circuit-reopens
   (testing "circuit-open? predicate stops drain between passes"
     (q/enqueue! {:op :add-entry! :id "a" :args [{:id "a"}]})

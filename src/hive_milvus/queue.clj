@@ -224,15 +224,33 @@
 ;; Drain
 ;; =============================================================================
 
+(defn write-failure?
+  "True when a write verb's return value is a refusal: a map whose
+   :success? is false or whose :error is non-nil. That is the shape
+   `resilient` answers once its retry budget is spent, and the shape the
+   circuit breaker answers while open.
+
+   Mirrors `hive-spi.memory.contract/failure?` (hive-spi f9e3025), which no
+   released hive-spi carries yet; switch to it when the pin can move."
+  [x]
+  (and (map? x)
+       (or (false? (:success? x))
+           (some? (:error x)))))
+
 (defn- run-op
-  "Execute one queued op via `dispatch-fn`. Return `::ok` on success,
-   `::failed` on any thrown exception. bounded-pmap's timeout path
-   returns its own `::failed` fallback, so we converge on the same
-   sentinel for retry logic."
+  "Execute one queued op via `dispatch-fn`. Return `::ok` when the op
+   landed, `::failed` when it threw OR answered a `write-failure?` value.
+   A write verb reports a spent retry budget as a value, not a throw, so
+   'did not throw' is not 'landed'. bounded-pmap's timeout path returns
+   its own `::failed` fallback, so we converge on the same sentinel."
   [dispatch-fn op]
   (try
-    (dispatch-fn op)
-    ::ok
+    (let [r (dispatch-fn op)]
+      (if (write-failure? r)
+        (do (log/warn "hive-milvus.queue drain op refused:" (:op op) "/" (:id op)
+                      "—" (pr-str (select-keys r [:error :errors :reconnecting?])))
+            ::failed)
+        ::ok))
     (catch Throwable e
       (log/warn "hive-milvus.queue drain op failed:" (:op op) "/" (:id op)
                 "—" (ex-message e))
@@ -287,9 +305,13 @@
 
    Options (map):
      :dispatch-fn    REQUIRED. (fn [op] ...) that applies one queued op
-                     to Milvus. Throw or return falsey on failure so
-                     the op is re-queued for the next pass. Typically
-                     built via `make-store-dispatch`.
+                     to Milvus. Signal failure by throwing OR by returning
+                     a `write-failure?` value (`{:success? false ...}` /
+                     `{:error ...}`, what a spent `resilient` budget or an
+                     open circuit answers); the op is then re-queued for
+                     the next pass. Any other return, nil included (update
+                     of an unknown id), counts as done. Typically built
+                     via `make-store-dispatch`.
      :circuit-open?  (fn []) predicate. If it returns truthy between
                      passes, drain stops and leaves the rest queued.
                      Default: never-open (best-effort).
