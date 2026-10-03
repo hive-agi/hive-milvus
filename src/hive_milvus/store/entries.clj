@@ -17,7 +17,8 @@
             [hive-milvus.store.search.pipeline :as search-pipeline]
             [hive-milvus.store.search.target :as search-target]
             [hive-milvus.store.search.boundary :as search-boundary]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [hive-milvus.failure :as failure]))
 
 (defn- apply-order-by
   [entries order-by]
@@ -46,13 +47,127 @@
       @(milvus/add coll-name [record] :upsert? true)
       (:id record))))
 
+(def ReadFailure
+  "One collection that could not answer a read."
+  [:map {:closed true}
+   [:collection :string]
+   [:message [:maybe :string]]])
+
+(def WriteFailure
+  "One collection that did not take a write (delete)."
+  [:map {:closed true}
+   [:collection :string]
+   [:message [:maybe :string]]])
+
+(defn- collection-failure
+  "A ReadFailure / WriteFailure for `coll`, from the exception it raised."
+  [coll ^Throwable e]
+  {:collection coll :message (or (ex-message e) (str (class e)))})
+
+(defn- fold-collections
+  "Run STEP `(fn [coll] value-or-nil)` over `colls` in order, stopping at the
+   first non-nil value when `stop-on-hit?`. A collection that does not exist
+   (`lookup/missing-collection?`) answered: it holds nothing. Any other
+   exception is a failure. Returns `{:found v :failed [..] :cause e}`."
+  [step colls stop-on-hit?]
+  (reduce (fn [acc coll]
+            (try
+              (let [v (step coll)]
+                (if (and stop-on-hit? (some? v))
+                  (reduced (assoc acc :found v))
+                  acc))
+              (catch Exception e
+                (if (lookup/missing-collection? e)
+                  acc
+                  (-> acc
+                      (update :failed conj (collection-failure coll e))
+                      (update :cause #(or % e)))))))
+          {:failed []}
+          colls))
+
+(defn locate-entry
+  "Ask each of `colls`, in order, for `id` through FETCH
+   (`(fn [coll id] value-or-nil)`), stopping at the first value.
+
+     r/ok value   some collection answered with it
+     r/ok nil     EVERY collection answered and none holds `id` - absence.
+                  A configured collection that was never created counts as
+                  answered (`lookup/missing-collection?`): it holds nothing.
+     r/err :milvus/read-incomplete {:id :failed [ReadFailure ...] :cause e}
+                  no value was found AND at least one collection failed, so
+                  absence cannot be told from an outage
+
+   A hit wins over a failing neighbour. Never throws: the decision is data,
+   and `located-value` is the boundary that raises it."
+  [fetch colls id]
+  (let [{:keys [found failed cause]} (fold-collections #(fetch % id) colls true)]
+    (cond
+      (some? found) (r/ok found)
+      (seq failed)  (r/err :milvus/read-incomplete
+                           {:id id :failed failed :cause cause})
+      :else         (r/ok nil))))
+
+(m/=> locate-entry [:=> [:cat fn? [:sequential :string] :any] :map])
+
+(defn located-value
+  "The value a `locate-entry` result answers to a caller: the entry, nil for
+   a true absence, or a raised ex-info for an incomplete read - never nil for
+   a failure. ex-data carries `:hive-milvus/failed-collections`, the key
+   `query-entries` uses.
+
+   The ex-info wraps the first failing collection's exception as its cause,
+   so `resilient` classifies it by that cause: a TRANSIENT cause is retried
+   once and, if still failing, answered as the legacy
+   `{:success? false ...}` map; a FATAL cause is re-thrown by `resilient`
+   (`retry/classify-err`), so the caller sees this ex-info."
+  [res]
+  (if (r/ok? res)
+    (:ok res)
+    (throw (ex-info (str "milvus read of " (pr-str (:id res)) " incomplete: "
+                         (count (:failed res)) " collection(s) unreachable,"
+                         " absence cannot be told from an outage")
+                    {:hive-milvus/failed-collections (:failed res)
+                     :id (:id res)}
+                    (:cause res)))))
+
 (defn get-entry
+  "The entry `id`, or nil when every known collection answered and none
+   holds it (a configured collection that was never created answers 'none').
+
+   A collection that cannot be read is NOT absence: when no collection holds
+   `id` and one failed, the read raises inside `resilient` (see
+   `located-value`). A transient cause is retried once, then answered as
+   `{:success? false :errors [..] :reconnecting? true}`; a fatal cause
+   propagates as the ex-info. Either way, never nil."
   [config-atom id]
   (resilient config-atom
-    (some (fn [coll]
-            (try (query/get-entry-by-id coll id)
-                 (catch Exception _ nil)))
-          (lookup/known-collections config-atom))))
+    (located-value
+     (locate-entry query/get-entry-by-id
+                   (lookup/known-collections config-atom)
+                   id))))
+
+(defn- merge-keep-embedding!
+  "FETCH port for `locate-entry`: read `id` from `coll` with its vector, merge
+   `updates`, upsert in place. The merged entry, or nil when `coll` lacks `id`."
+  [updates coll id]
+  (let [rows @(milvus/query-scalar coll
+                {:filter            (str "id == \"" id "\"")
+                 :limit             1
+                 :output-fields     ["id" "embedding" "type" "tags" "content"
+                                     "content_hash" "created" "updated"
+                                     "duration" "expires"
+                                     "access_count" "helpful_count" "unhelpful_count"
+                                     "project_id"]
+                 :consistency-level :strong})]
+    (when-let [row (first rows)]
+      (let [existing  (schema/record->entry row)
+            embedding (:embedding row)
+            merged    (-> existing
+                          (merge updates)
+                          (assoc :id id :updated (schema/now-iso)))
+            record    (schema/entry->record-pure merged coll embedding)]
+        @(milvus/add coll [record] :upsert? true)
+        merged))))
 
 (defn update-fields-keep-embedding!
   "Update entry fields without re-embedding.
@@ -65,33 +180,43 @@
    — and on 4096d Venice that waste blows past the 30 s memory-write
    timeout when an add fans out updates to multiple KG targets.
 
-   Returns the merged entry on success, nil if id not found in any
-   known collection."
+   Returns the merged entry on success, nil when every known collection
+   answered and none holds `id`. A collection that failed is not absence
+   (see `locate-entry` / `located-value`): a transient cause reaches the
+   caller as the legacy failure map from `resilient`, a fatal cause as the
+   raised ex-info. Never a nil that reads as 'unknown id'."
   [config-atom id updates]
   (resilient config-atom
-    (some
-      (fn [coll]
-        (try
-          (let [rows @(milvus/query-scalar coll
-                        {:filter            (str "id == \"" id "\"")
-                         :limit             1
-                         :output-fields     ["id" "embedding" "type" "tags" "content"
-                                             "content_hash" "created" "updated"
-                                             "duration" "expires"
-                                             "access_count" "helpful_count" "unhelpful_count"
-                                             "project_id"]
-                         :consistency-level :strong})]
-            (when-let [row (first rows)]
-              (let [existing  (schema/record->entry row)
-                    embedding (:embedding row)
-                    merged    (-> existing
-                                  (merge updates)
-                                  (assoc :id id :updated (schema/now-iso)))
-                    record    (schema/entry->record-pure merged coll embedding)]
-                @(milvus/add coll [record] :upsert? true)
-                merged)))
-          (catch Exception _ nil)))
-      (lookup/known-collections config-atom))))
+    (located-value
+     (locate-entry (partial merge-keep-embedding! updates)
+                   (lookup/known-collections config-atom)
+                   id))))
+
+(defn update-failure
+  "The legacy error map `update-entry!` answers for a relocate-pipeline
+   r/err `res` on `id`:
+
+     {:error category :id id :detail (dissoc res :error) :reconnecting? bool}
+
+   `:reconnecting?` says whether a retry can change the answer, the same
+   flag `resilient`'s failure map carries, so a queue drain re-queues only
+   transient failures. Only a `:boundary/*` effect error (a Milvus call that
+   threw) can be transient, and only when its message is a transport drop or
+   timeout (`failure/classify`). Routing, embedding and collector errors are
+   permanent. Pure."
+  [id res]
+  (let [category (:error res)
+        transient? (boolean
+                    (and (keyword? category)
+                         (= "boundary" (namespace category))
+                         (when-let [msg (:message res)]
+                           (or (re-find #"(?i)timed out" msg)
+                               (failure/transient?
+                                (failure/classify (ex-info msg {})))))))]
+    {:error         category
+     :id            id
+     :detail        (dissoc res :error)
+     :reconnecting? transient?}))
 
 (defn update-entry!
   "Update an entry's fields. Routing-aware via the CPPB-layered
@@ -102,8 +227,8 @@
    handles the COLLECT → PROMOTE → BOUNDARY flow with proper Result
    tracking. This wrapper unwraps the pipeline's r/ok / r/err back
    into the legacy raw-map shape callers expect: returns the merged
-   entry on success, nil when `id` is unknown, or a raw err map for
-   downstream errors.
+   entry on success, nil when `id` is unknown, or the `update-failure`
+   map (`{:error .. :reconnecting? transient?}`) for downstream errors.
 
    Migration path: callers that want railway-tracked errors should
    call `reloc-pipeline/relocate-update` directly instead of this
@@ -118,15 +243,54 @@
       nil
 
       :else
-      {:error (:error res) :id id :detail (dissoc res :error)})))
+      (update-failure id res))))
+
+(defn delete-everywhere
+  "Delete `id` from every one of `colls` through DELETE (`(fn [coll id])`).
+
+     r/ok true    every collection took the delete (an unknown id included;
+                  a collection that was never created holds nothing to
+                  delete, see `lookup/missing-collection?`)
+     r/err :milvus/write-incomplete {:id :failed [WriteFailure ...] :cause e}
+                  some collection did not, so the entry may survive there
+
+   Every collection is attempted even after a failure. Never throws."
+  [delete colls id]
+  (let [{:keys [failed cause]} (fold-collections #(delete % id) colls false)]
+    (if (seq failed)
+      (r/err :milvus/write-incomplete {:id id :failed failed :cause cause})
+      (r/ok true))))
+
+(m/=> delete-everywhere [:=> [:cat fn? [:sequential :string] :any] :map])
+
+(defn deleted-value
+  "The value a `delete-everywhere` result answers: true, or a raised ex-info
+   when some collection did not take the delete. Like `located-value`, the
+   ex-info wraps the first failing collection's exception as its cause (so
+   `resilient` classifies it) and carries `:hive-milvus/failed-collections`."
+  [res]
+  (if (r/ok? res)
+    (:ok res)
+    (throw (ex-info (str "milvus delete of " (pr-str (:id res)) " incomplete: "
+                         (count (:failed res)) " collection(s) did not take it,"
+                         " the entry may survive there")
+                    {:hive-milvus/failed-collections (:failed res)
+                     :id (:id res)}
+                    (:cause res)))))
 
 (defn delete-entry!
+  "Delete `id` from every known collection. true when every collection took
+   the delete (one that was never created has nothing to take). A collection
+   that failed means the delete did not land, so it raises inside
+   `resilient` (`deleted-value`): a transient cause is retried once and then
+   answered as the hive-spi Failure map (`{:success? false ...}`), a fatal
+   cause propagates as the ex-info. Never a `true` for a lost delete."
   [config-atom id]
   (resilient config-atom
-    (doseq [coll (lookup/known-collections config-atom)]
-      (try @(milvus/delete coll [id])
-           (catch Exception _ nil)))
-    true))
+    (deleted-value
+     (delete-everywhere (fn [coll id] @(milvus/delete coll [id]))
+                        (lookup/known-collections config-atom)
+                        id))))
 
 (defn target-collection-for
   "Resolve the canonical Milvus collection for `entry` per current
@@ -276,19 +440,37 @@
      :embedder (search-boundary/collection-embedder)
      :searcher (search-boundary/milvus-vector-search)}))
 
-(defn search-similar
-  "Semantic search. Returns entries, best first.
+(defn search-with
+  "Run a semantic search for `query-text` against the collaborators in `ctx`
+   (see `search-pipeline/context`). Returns the entries, best first.
 
-   A target that fails is LOGGED, not silently dropped — a search that returns
-   fewer hits because a collection errored used to report success."
+   A target that fails is logged AND carried on the returned vector as
+
+     ^{:hive-milvus/failed-collections [{:collection name :message str} ...]}
+
+   - the key and shape `query-entries` uses. Absent metadata means every
+   target answered, so an empty result is a fact about the data; present
+   metadata means the result is partial and must not be reported as
+   'nothing matches'."
+  [ctx query-text opts]
+  (let [{:keys [results failed searched]}
+        (search-pipeline/search ctx (assoc opts :text query-text))]
+    (if (seq failed)
+      (do (log/warn "search: target(s) failed" {:failed failed :searched searched})
+          (with-meta (vec results)
+            {:hive-milvus/failed-collections
+             (mapv (fn [{:keys [collection error] :as f}]
+                     {:collection collection
+                      :message    (str (or (:message f) error))})
+                   failed)}))
+      (vec results))))
+
+(defn search-similar
+  "Semantic search. Returns entries, best first; a failed target is carried
+   as `:hive-milvus/failed-collections` metadata (see `search-with`)."
   [config-atom query-text opts]
   (resilient config-atom
-    (let [{:keys [results failed searched]}
-          (search-pipeline/search (search-context config-atom)
-                                  (assoc opts :text query-text))]
-      (when (seq failed)
-        (log/warn "search: target(s) failed" {:failed failed :searched searched}))
-      results)))
+    (search-with (search-context config-atom) query-text opts)))
 
 (defn supports-semantic-search? [config-atom] (boolean (some port/provider-available-for? (lookup/known-collections config-atom))))
 
