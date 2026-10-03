@@ -164,19 +164,25 @@
    failure (UNAVAILABLE, DEADLINE_EXCEEDED, IO timeout, \"Keepalive failed\",
    etc.) the background reconnect loop is kicked, we block briefly for
    it to verify a fresh client via probe round-trip, and `body` is
-   re-executed once. Callers see either the successful result or, once
-   the budget is spent (or while the circuit is open), a FAILURE VALUE:
-   `{:success? false :errors [..] :reconnecting? true}` (circuit: `:error
-   :circuit-open`). It is returned, not thrown.
+   re-executed once. Callers see one of:
 
-   That value is the hive-spi Failure shape of the write contract
+     - the body's value;
+     - for a TRANSIENT failure once the budget is spent (or while the
+       circuit is open), a FAILURE VALUE, returned not thrown:
+       `{:success? false :errors [..] :reconnecting? true}` (circuit:
+       `:error :circuit-open`);
+     - for a FATAL failure (`failure/classify` finds no transient link in
+       the cause chain), the original exception, RE-THROWN
+       (`classify-err`).
+
+   The failure value is the hive-spi Failure shape of the write contract
    (AddResult / UpdateResult / DeleteResult). It is NOT a success: every
    caller of a wrapped write MUST classify the return through
    `hive-spi.memory.contract/outcome` (or `failure?`) rather than treat
-   'did not throw' as 'landed' - see `hive-milvus.queue/run-op`. For the
-   same reason a body must RAISE on a partial failure (see
-   `store.entries/located-value`) instead of answering nil/true, or this
-   wrapper never sees it.
+   'did not throw' as 'landed' - see `hive-milvus.queue/write-outcome`. For
+   the same reason a body must RAISE on a partial failure (see
+   `store.entries/located-value`, `deleted-value`) instead of answering
+   nil/true, or this wrapper never sees it.
 
    Before executing `body`, calls `ensure-live!` to proactively detect
    a dead client and start the reconnect loop early. The reactive

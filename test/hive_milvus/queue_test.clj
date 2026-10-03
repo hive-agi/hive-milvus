@@ -161,6 +161,53 @@
   (is (false? (q/write-failure? {:id "x" :content "c"})))
   (is (false? (q/write-failure? {:success? true :queued? true}))))
 
+(deftest write-outcome-separates-transient-from-permanent
+  (testing "landed"
+    (is (= :ok (q/write-outcome "id")))
+    (is (= :ok (q/write-outcome nil)))
+    (is (= :ok (q/write-outcome true)))
+    (is (= :ok (q/write-outcome {:id "x" :content "c"}))))
+  (testing "transient: a spent retry budget or an open circuit is retried"
+    (is (= :retry (q/write-outcome {:success? false :errors ["x"] :reconnecting? true})))
+    (is (= :retry (q/write-outcome {:success? false :error :circuit-open :reconnecting? true})))
+    (is (= :retry (q/write-outcome {:error :boundary/milvus-write-failed :id "x"
+                                    :reconnecting? true}))))
+  (testing "permanent: retrying cannot change the answer"
+    (is (= :drop (q/write-outcome {:success? false :errors ["bad"] :reconnecting? false})))
+    (is (= :drop (q/write-outcome {:error :routing/no-target :id "x" :detail {}})))))
+
+(deftest drain-drops-a-permanently-refused-write
+  (testing "update-entry!'s {:error ...} for a pipeline error is not re-queued forever"
+    (q/enqueue! {:op :update-entry! :id "p" :args ["p" {:type "bogus"}]})
+    (let [before (:drained-dropped (q/stats))
+          result (q/drain! {:dispatch-fn (constantly {:error  :routing/no-target
+                                                      :id     "p"
+                                                      :detail {}})})]
+      (is (= :drained (:result result)))
+      (is (= 1 (:dropped result)))
+      (is (zero? (:failed result)))
+      (is (zero? (q/size)) "a permanent failure leaves the queue")
+      (is (= (inc before) (:drained-dropped (q/stats)))))))
+
+(deftest drain-drops-a-fatal-failure-map
+  (q/enqueue! {:op :add-entry! :id "f" :args [{:id "f"}]})
+  (let [result (q/drain! {:dispatch-fn (constantly {:success?      false
+                                                    :errors        ["schema mismatch"]
+                                                    :reconnecting? false})})]
+    (is (= 1 (:dropped result)))
+    (is (zero? (q/size)))))
+
+(deftest drain-keeps-transient-and-drops-permanent-in-one-pass
+  (q/enqueue! {:op :add-entry! :id "t" :args [{:id "t"}]})
+  (q/enqueue! {:op :update-entry! :id "p" :args ["p" {}]})
+  (let [result (q/drain! {:dispatch-fn (fn [{:keys [id]}]
+                                         (if (= id "t")
+                                           {:success? false :errors ["x"] :reconnecting? true}
+                                           {:error :routing/no-target :id id}))})]
+    (is (= :all-failed (:result result)) "the transient op still makes no progress")
+    (is (= 1 (:dropped result)))
+    (is (= 1 (q/size)) "only the transient op is left")))
+
 (deftest drain-aborts-when-circuit-reopens
   (testing "circuit-open? predicate stops drain between passes"
     (q/enqueue! {:op :add-entry! :id "a" :args [{:id "a"}]})

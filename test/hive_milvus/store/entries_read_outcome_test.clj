@@ -11,7 +11,8 @@
             [hive-milvus.store.entries :as entries]
             [hive-milvus.store.search.boundary :as b]
             [hive-milvus.store.search.pipeline :as pipeline]
-            [hive-milvus.store.search.target :as tgt]))
+            [hive-milvus.store.search.target :as tgt]
+            [hive-milvus.store.lookup :as lookup]))
 
 (def ^:private timeout-msg "milvus get timed out after 5000ms")
 
@@ -91,6 +92,78 @@
 ;; =============================================================================
 ;; search-similar: a failed target travels with the results
 ;; =============================================================================
+
+;; =============================================================================
+;; A configured collection that was never created holds nothing: answered-absent
+;; =============================================================================
+
+(defn- missing!
+  "What Milvus answers for a collection that does not exist (gRPC status 100)."
+  [coll]
+  (throw (ex-info (str "Milvus get failed: collection not found[collection=" coll "]")
+                  {:status 100})))
+
+(deftest a-never-created-collection-is-recognised-test
+  (is (lookup/missing-collection? (ex-info "collection not found[collection=c]" {})))
+  (is (lookup/missing-collection?
+       (java.util.concurrent.ExecutionException.
+        (ex-info "Milvus HTTP /v2/vectordb/entities/get returned code=100 message=collection not found[collection=c]" {}))))
+  (is (lookup/missing-collection? (RuntimeException. "can't find collection: c")))
+  (is (not (lookup/missing-collection? (ex-info timeout-msg {:milvus/timeout true}))))
+  (is (not (lookup/missing-collection? (RuntimeException. "UNAVAILABLE: io exception")))))
+
+(deftest a-never-created-collection-is-absence-not-failure-test
+  (let [fetch (fn [coll id] (if (= coll "new_1024d") (missing! coll) (get {} id)))]
+    (is (= (r/ok nil) (entries/locate-entry fetch ["old" "new_1024d"] "x"))
+        "a miss everywhere else plus a collection that does not exist is absence"))
+  (let [e     {:id "x"}
+        fetch (fn [coll id] (if (= coll "new_1024d") (missing! coll) ({"x" e} id)))]
+    (is (= (r/ok e) (entries/locate-entry fetch ["new_1024d" "old"] "x")))))
+
+(deftest a-never-created-collection-takes-a-delete-test
+  (let [del (fn [coll _id] (when (= coll "new_1024d") (missing! coll)))]
+    (is (= (r/ok true) (entries/delete-everywhere del ["old" "new_1024d"] "x"))
+        "nothing to delete there, so the delete landed")))
+
+(deftest a-missing-collection-does-not-hide-a-real-outage-test
+  (let [fetch (fn [coll _id] (case coll "new_1024d" (missing! coll) "down" (timeout!) nil))
+        res   (entries/locate-entry fetch ["new_1024d" "down"] "x")]
+    (is (r/err? res))
+    (is (= ["down"] (mapv :collection (:failed res))))))
+
+;; =============================================================================
+;; A delete that did not land says so as a WRITE, not a read
+;; =============================================================================
+
+(deftest an-incomplete-delete-raises-a-write-message-test
+  (let [res (entries/delete-everywhere (fn [_ _] (timeout!)) ["a"] "x")
+        ex  (try (entries/deleted-value res) nil
+                 (catch clojure.lang.ExceptionInfo e e))]
+    (is (some? ex))
+    (is (re-find #"delete of \"x\"" (ex-message ex)))
+    (is (not (re-find #"read" (ex-message ex))) "a delete is not a read")
+    (is (= [{:collection "a" :message timeout-msg}]
+           (:hive-milvus/failed-collections (ex-data ex))))
+    (is (failure/transient? (failure/classify ex)) "cause kept, so resilient retries it"))
+  (is (true? (entries/deleted-value (r/ok true)))))
+
+;; =============================================================================
+;; update-entry!: the relocate pipeline's error says whether a retry can help
+;; =============================================================================
+
+(deftest a-pipeline-error-is-marked-transient-or-permanent-test
+  (testing "a write the transport dropped is transient"
+    (let [m (entries/update-failure "x" {:error   :boundary/milvus-write-failed
+                                         :class   "class clojure.lang.ExceptionInfo"
+                                         :message "milvus add timed out after 5000ms: UNAVAILABLE"})]
+      (is (= :boundary/milvus-write-failed (:error m)))
+      (is (= "x" (:id m)))
+      (is (true? (:reconnecting? m)))))
+  (testing "routing / embedding / schema errors are permanent"
+    (is (false? (:reconnecting? (entries/update-failure "x" {:error :routing/no-target :type "bogus"}))))
+    (is (false? (:reconnecting? (entries/update-failure
+                                 "x" {:error   :boundary/milvus-write-failed
+                                      :message "field embedding: dim mismatch"}))))))
 
 (defn- row [id d]
   {:id id :distance d :type "note" :tags "[]" :content id :content_hash ""
