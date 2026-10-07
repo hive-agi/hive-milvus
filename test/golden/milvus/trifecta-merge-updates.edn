@@ -1,0 +1,7 @@
+{:foreign-id
+ {:id "e1", :out {:id "e1", :type "note", :content "after"}},
+ :nil-updates
+ {:id "e1", :out {:id "e1", :type "note", :content "before"}},
+ :no-id
+ {:id "e1",
+  :out {:id "e1", :type "note", :content "after", :tags ["x"]}}}

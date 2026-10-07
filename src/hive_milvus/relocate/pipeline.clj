@@ -117,6 +117,14 @@
       (r/ok (let [v (:ok res)] (assoc v :moved? (:placed? v))))
       res)))
 
+(defn merge-updates
+  "Pure: the entry `existing` with `updates` merged over it, keeping `id` as
+   its identity. An :id inside `updates` is ignored, so an update can neither
+   rename the entry nor redirect the write onto another row. nil `updates`
+   leaves `existing` unchanged apart from the pinned :id."
+  [existing updates id]
+  (assoc (merge existing updates) :id id))
+
 (defn relocate-update
   "Update-with-relocation: merge `updates` into the entry, recompute
    its target collection from the merged shape, and either upsert in
@@ -124,6 +132,14 @@
 
    Replaces the body of `entries/update-entry!` for the routing-aware
    path. Returns r/ok merged-entry on success or r/err on failure.
+
+   `id` is the entry's identity, not an updatable field: an :id inside
+   `updates` is overridden, so it can neither redirect the write nor make
+   the source delete hit another row.
+
+   An update that stays in place and leaves the text to embed unchanged
+   keeps the stored vector (`boundary/keep-stored-vector`) rather than
+   calling the embedder again.
 
    Note: `relocate-one` only relocates the entry as it CURRENTLY is.
    When updates change the :type and the new :type routes to a
@@ -139,13 +155,15 @@
     ;; short-circuits on any binding whose value isn't a Result, so
     ;; raw maps from `merge`/`assoc` would silently abort the pipeline
     ;; before `milvus-write!` ever fires.
-    (let [merged        (merge (:entry bundle-collected) updates)
-          bundle-merged (assoc bundle-collected :entry merged)]
+    (let [existing      (:entry bundle-collected)
+          merged        (merge-updates existing updates id)
+          bundle-merged (assoc bundle-collected :entry merged :existing existing)]
       (r/let-ok
         [bundle-targeted (p-routing/compute-target bundle-merged)
          bundle-classed  (p-routing/classify-relocation-need bundle-targeted)
          bundle-ensured  (boundary/ensure-target-collection bundle-classed)
-         bundle-recorded (p-record/build-target-record bundle-ensured)
+         bundle-kept     (boundary/keep-stored-vector bundle-ensured)
+         bundle-recorded (p-record/build-target-record bundle-kept)
          bundle-written  (boundary/milvus-write! (r/ok bundle-recorded))]
         (if (= :no-op (:relocation bundle-classed))
           (r/ok merged)

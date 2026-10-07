@@ -218,32 +218,36 @@
      :detail        (dissoc res :error)
      :reconnecting? transient?}))
 
+(defn update-result
+  "The hive-spi write-contract value (`hive-spi.memory.contract/UpdateResult`)
+   for a `relocate-update` result `res` on `id`. Pure:
+
+     r/ok merged             -> the merged entry, carrying `id` as its :id
+                                (an :id inside the updates cannot rename it)
+     r/err :collector/not-found -> nil, the id is absent
+     any other r/err         -> the `update-failure` map (:error non-nil)"
+  [id res]
+  (cond
+    (r/ok? res)                            (assoc (:ok res) :id id)
+    (= :collector/not-found (:error res))  nil
+    :else                                  (update-failure id res)))
+
 (defn update-entry!
   "Update an entry's fields. Routing-aware via the CPPB-layered
    pipeline — when the merged entry's target collection differs from
    its current collection, the pipeline relocates it transparently.
 
-   Delegates to `hive-milvus.relocate.pipeline/relocate-update`, which
-   handles the COLLECT → PROMOTE → BOUNDARY flow with proper Result
-   tracking. This wrapper unwraps the pipeline's r/ok / r/err back
-   into the legacy raw-map shape callers expect: returns the merged
-   entry on success, nil when `id` is unknown, or the `update-failure`
-   map (`{:error .. :reconnecting? transient?}`) for downstream errors.
+   Delegates to `hive-milvus.relocate.pipeline/relocate-update` and answers
+   its result through `update-result`: the merged entry (carrying `id`) on
+   success, nil when `id` is unknown, or the `update-failure` map
+   (`{:error .. :reconnecting? transient?}`) for downstream errors - each a
+   value of hive-spi's UpdateResult contract.
 
    Migration path: callers that want railway-tracked errors should
    call `reloc-pipeline/relocate-update` directly instead of this
    facade."
   [config-atom id updates]
-  (let [res (reloc-pipeline/relocate-update config-atom id updates)]
-    (cond
-      (r/ok? res)
-      (:ok res)
-
-      (= :collector/not-found (:error res))
-      nil
-
-      :else
-      (update-failure id res))))
+  (update-result id (reloc-pipeline/relocate-update config-atom id updates)))
 
 (defn delete-everywhere
   "Delete `id` from every one of `colls` through DELETE (`(fn [coll id])`).

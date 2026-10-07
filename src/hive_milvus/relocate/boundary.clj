@@ -16,7 +16,9 @@
             [hive-cppb.core :as cppb]
             [hive-milvus.store.routing :as store-routing]
             [milvus-clj.api :as milvus]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-milvus.relocate.promoters.record :as p-record]
+            [hive-milvus.collection.naming :as naming]))
 
 (defn- ensure-target!
   "Make sure the target collection exists with the correct dimension
@@ -38,6 +40,44 @@
     (if (r/ok? res)
       (r/ok bundle)
       res)))
+
+(defn- read-stored-embedding
+  "Result<the vector stored for `id` in `coll`, or nil>. One Milvus query."
+  [coll id]
+  (r/try-effect* :boundary/embedding-read-failed
+    (some-> @(milvus/query-scalar coll {:filter            (str "id == \"" id "\"")
+                                        :limit             1
+                                        :output-fields     ["id" "embedding"]
+                                        :consistency-level :strong})
+            first
+            :embedding
+            vec)))
+
+(defn keep-vector
+  "`bundle` with `:kept-embedding` when its stored vector is still the right
+   one (`p-record/vector-still-valid?`) and `read` (coll id -> Result<vector>)
+   returns one of the collection's width. Anything else, a failed read
+   included, leaves the bundle as it is and the record gets a fresh embed:
+   keeping the vector only ever saves work, it never decides correctness."
+  [read {:keys [src-coll id] :as bundle}]
+  (if-not (p-record/vector-still-valid? bundle)
+    bundle
+    (let [res      (read src-coll id)
+          v        (when (r/ok? res) (:ok res))
+          expected (naming/dim-of src-coll)]
+      (if (and (seq v) (or (nil? expected) (= expected (count v))))
+        (assoc bundle :kept-embedding v)
+        bundle))))
+
+(cppb/defpromoter keep-stored-vector
+  "Promote step before `build-target-record`: read the stored vector into
+   `:kept-embedding` when the update leaves the text to embed unchanged, so
+   the record is built without calling the embedder. Always r/ok.
+
+   Bundle in:  {:src-coll s :target-coll s :id id :existing e :entry e …}
+   Bundle out: same, plus {:kept-embedding v} when kept."
+  [bundle]
+  (r/ok (keep-vector read-stored-embedding bundle)))
 
 (cppb/defboundary milvus-write!
   [bundle-result]
