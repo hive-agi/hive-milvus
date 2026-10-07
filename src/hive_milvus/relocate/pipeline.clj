@@ -125,6 +125,10 @@
    Replaces the body of `entries/update-entry!` for the routing-aware
    path. Returns r/ok merged-entry on success or r/err on failure.
 
+   `id` is the entry's identity, not an updatable field: an :id inside
+   `updates` is overridden, so it can neither redirect the write nor make
+   the source delete hit another row.
+
    An update that stays in place and leaves the text to embed unchanged
    keeps the stored vector (`boundary/keep-stored-vector`) rather than
    calling the embedder again.
@@ -144,7 +148,7 @@
     ;; raw maps from `merge`/`assoc` would silently abort the pipeline
     ;; before `milvus-write!` ever fires.
     (let [existing      (:entry bundle-collected)
-          merged        (merge existing updates)
+          merged        (assoc (merge existing updates) :id id)
           bundle-merged (assoc bundle-collected :entry merged :existing existing)]
       (r/let-ok
         [bundle-targeted (p-routing/compute-target bundle-merged)

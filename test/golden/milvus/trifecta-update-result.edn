@@ -1,0 +1,6 @@
+{:embed-failed {:outcome :failed, :id-kept true},
+ :not-found {:outcome :absent, :id-kept nil},
+ :ok-foreign-id {:outcome :landed, :id-kept true},
+ :ok-merged {:outcome :landed, :id-kept true},
+ :ok-no-id {:outcome :landed, :id-kept true},
+ :write-failed {:outcome :failed, :id-kept true}}
