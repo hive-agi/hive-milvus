@@ -12,7 +12,8 @@
    patterns in `hive-milvus.store.entries` for the routing-aware
    path. Pre-existing entries.clj fns are not modified here (out of
    scope per the refactor plan)."
-  (:require [hive-dsl.result :as r]
+  (:require [hive-milvus.store.deref :as d]
+            [hive-dsl.result :as r]
             [hive-cppb.core :as cppb]
             [hive-milvus.store.routing :as store-routing]
             [milvus-clj.api :as milvus]
@@ -45,10 +46,10 @@
   "Result<the vector stored for `id` in `coll`, or nil>. One Milvus query."
   [coll id]
   (r/try-effect* :boundary/embedding-read-failed
-    (some-> @(milvus/query-scalar coll {:filter            (str "id == \"" id "\"")
+    (some-> (d/deref! :query-scalar (milvus/query-scalar coll {:filter            (str "id == \"" id "\"")
                                         :limit             1
                                         :output-fields     ["id" "embedding"]
-                                        :consistency-level :strong})
+                                        :consistency-level :strong}))
             first
             :embedding
             vec)))
@@ -92,7 +93,7 @@
   :on-success
   (let [{:keys [target-coll record]} value]
     (r/try-effect* :boundary/milvus-write-failed
-      (do @(milvus/add target-coll [record] :upsert? true)
+      (do (d/deref! :add (milvus/add target-coll [record] :upsert? true))
           value)))
   :on-failure error)
 
@@ -108,7 +109,7 @@
   (let [{:keys [src-coll entry]} value
         id (:id entry)]
     (try
-      @(milvus/delete src-coll [id])
+      (d/deref! :delete (milvus/delete src-coll [id]))
       (r/ok value)
       (catch Exception e
         (log/warn "milvus-delete! failed; duplicate row remains in"

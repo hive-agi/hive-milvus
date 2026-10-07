@@ -1,0 +1,6 @@
+{:query-timeout {:timeout? true :op :query-scalar :timeout-ms 1}
+ :write-timeout {:timeout? true :op :add :timeout-ms 1}
+ :delete-timeout {:timeout? true :op :delete :timeout-ms 1}
+ :index-timeout {:timeout? true :op :create-index :timeout-ms 1}
+ :load-timeout {:timeout? true :op :load-collection :timeout-ms 1}
+ :get-ready {:value :ack}}

@@ -5,7 +5,8 @@
 (ns hive-milvus.store.search.boundary
   "The effects a search performs: embedding the query, and asking a collection
    for its nearest rows. Both are ports; both return Result."
-  (:require [hive-dsl.result :as r]
+  (:require [hive-milvus.store.deref :as d]
+            [hive-dsl.result :as r]
             [hive-milvus.embed.port :as port]
             [hive-milvus.collection.naming :as naming]
             [hive-milvus.store.schema :as schema]
@@ -71,12 +72,12 @@
     (r/try-effect* :search/milvus-query-failed
       (rows->distances
        memory-metric
-       @(milvus/query (:collection target)
+       (d/deref! :query (milvus/query (:collection target)
                       (cond-> {:vector        query-vec
                                :limit         limit
                                :metric-type   memory-metric
                                :output-fields schema/default-read-fields}
-                        filter-expr (assoc :filter filter-expr)))))))
+                        filter-expr (assoc :filter filter-expr))))))))
 
 (defrecord StubEmbedder [vec-by-space]
   IQueryEmbedder
