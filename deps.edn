@@ -8,7 +8,7 @@
 
         ;; hive-spi — SPI leaf: the IMemoryStore protocol family lives in
         ;; hive-spi.memory.ports. CORE requires it (store/queue/schema).
-        io.github.hive-agi/hive-spi {:mvn/version "1.4.2"}
+        io.github.hive-agi/hive-spi {:mvn/version "1.4.3"}
 
         ;; hive-mcp is TEST-scope only (see the :test alias). No namespace
         ;; under src/ requires the host at load time any more: the store
