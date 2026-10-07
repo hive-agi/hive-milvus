@@ -10,7 +10,8 @@
             [hive-milvus.embed.fake :as fake-embed]
             [hive-milvus.embed.port :as port]
             [hive-milvus.store.index :as index]
-            [milvus-clj.client :as client]))
+            [milvus-clj.client :as client]
+            [milvus-clj.api]))
 
 (def collection
   "The single collection the fake embedder routes every type to."
@@ -82,7 +83,10 @@
   (->FakeClient (atom {})))
 
 (def ^:private client-slot
-  "milvus-clj.api's client slot: the atom `connect!` resets with a transport."
+  "milvus-clj.api's client slot: the atom `connect!` resets with a transport.
+   milvus-clj 0.2.5 exposes no public setter for it (only `connect!`, which
+   always builds a real transport, and `disconnect!`), so the private var is
+   read here; `milvus-clj.api` is required above so the var is loaded."
   @#'milvus-clj.api/default-client)
 
 (defn- embedder

@@ -117,6 +117,14 @@
       (r/ok (let [v (:ok res)] (assoc v :moved? (:placed? v))))
       res)))
 
+(defn merge-updates
+  "Pure: the entry `existing` with `updates` merged over it, keeping `id` as
+   its identity. An :id inside `updates` is ignored, so an update can neither
+   rename the entry nor redirect the write onto another row. nil `updates`
+   leaves `existing` unchanged apart from the pinned :id."
+  [existing updates id]
+  (assoc (merge existing updates) :id id))
+
 (defn relocate-update
   "Update-with-relocation: merge `updates` into the entry, recompute
    its target collection from the merged shape, and either upsert in
@@ -148,7 +156,7 @@
     ;; raw maps from `merge`/`assoc` would silently abort the pipeline
     ;; before `milvus-write!` ever fires.
     (let [existing      (:entry bundle-collected)
-          merged        (assoc (merge existing updates) :id id)
+          merged        (merge-updates existing updates id)
           bundle-merged (assoc bundle-collected :entry merged :existing existing)]
       (r/let-ok
         [bundle-targeted (p-routing/compute-target bundle-merged)

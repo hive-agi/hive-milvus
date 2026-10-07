@@ -105,6 +105,9 @@
   (reset! restore (fake/install!))
   (store/create-store {:collection-name fake/collection}))
 
+;; Pinned to hive-spi 1.4.3: these are the write-side case ids of
+;; hive-spi.memory.conformance in that release. A hive-spi bump that adds or
+;; renames write cases must revisit this list.
 (def ^:private write-cases
   [:add-returns-id :add-generates-id :update-merges :write-returns-honour-contract
    :update-unknown-is-absent :delete-then-get-is-nil :delete-unknown-is-true
