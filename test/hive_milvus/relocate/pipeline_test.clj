@@ -154,6 +154,52 @@
 ;; Focused regression — explicit, readable failure on the original bug
 ;; ============================================================
 
+;; ============================================================
+;; merge-updates — the update can never rename the entry
+;; ============================================================
+;;
+;; `update-result` re-assocs :id on the value it returns, so a store-level
+;; test cannot tell whether the WRITE kept the id. This pins the pure merge
+;; that decides which row the pipeline writes (and which it deletes).
+
+(defn merged-entry
+  "Harness: `merge-updates` over [existing updates id], paired with the id it
+   was asked to keep."
+  [[existing updates id]]
+  {:id id :out (p/merge-updates existing updates id)})
+
+(def ^:private gen-merge-input
+  (gen/let [id      gen-id
+            other   (gen/elements ["hijack" "k9" "k1"])
+            content gen/string-alphanumeric
+            shape   (gen/elements [:foreign-id :no-id :nil])]
+    [{:id id :type "note" :content "before" :tags ["t"]}
+     (case shape
+       :foreign-id {:id other :content content}
+       :no-id      {:content content}
+       :nil        nil)
+     id]))
+
+(deftrifecta merge-updates-keeps-the-entry-id
+  hive-milvus.relocate.pipeline-test/merged-entry
+  {:golden-path "test/golden/milvus/trifecta-merge-updates.edn"
+   :cases       {:foreign-id [{:id "e1" :type "note" :content "before"}
+                              {:id "hijack" :content "after"}
+                              "e1"]
+                 :no-id      [{:id "e1" :type "note" :content "before"}
+                              {:content "after" :tags ["x"]}
+                              "e1"]
+                 :nil-updates [{:id "e1" :type "note" :content "before"}
+                               nil
+                               "e1"]}
+   :gen         gen-merge-input
+   :pred        (fn [{:keys [id out]}] (= id (:id out)))
+   :num-tests   200
+   :mutations   [["plain-merge"
+                  ;; the pre-fix shape: the updates' :id wins
+                  (fn [[existing updates id]]
+                    {:id id :out (merge existing updates)})]]})
+
 (deftest let-ok-short-circuit-regression
   (testing "relocate-update fires milvus-write! even when r/let-ok bindings
             include non-Result pure expressions"

@@ -8,7 +8,8 @@
 
    Both are `defonce` so hot-reload doesn't desync with milvus-clj's own
    singleton client state."
-  (:require [hive-dsl.result :as dsl-r]
+  (:require [hive-milvus.store.deref :as d]
+            [hive-dsl.result :as dsl-r]
             [milvus-clj.api :as milvus]
             [milvus-clj.schema :as milvus-schema]
             [milvus-clj.index :as milvus-index]
@@ -53,10 +54,10 @@
   (when-not (contains? @indexed-collections collection-name)
     (doseq [field scalar-indexed-fields]
       (let [result (dsl-r/rescue ::index-failed
-                     @(milvus/create-index collection-name
+                     (d/deref! :create-index (milvus/create-index collection-name
                                            {:field-name  field
                                             :index-type  io.milvus.param.IndexType/INVERTED
-                                            :metric-type :l2}))]
+                                            :metric-type :l2})))]
         (if (= result ::index-failed)
           (log/debug "ensure-scalar-indexes! skipping" field "(likely already indexed)")
           (log/info "Ensured INVERTED scalar index on" field "for" collection-name))))
@@ -69,18 +70,18 @@
    process so repeated `connect!` calls don't re-issue the expensive
    load RPC."
   [collection-name dimension]
-  (if-not @(milvus/has-collection collection-name)
+  (if-not (d/deref! :has-collection (milvus/has-collection collection-name))
     (do (log/info "Creating Milvus collection:" collection-name "dim:" dimension)
-        @(milvus/create-collection collection-name
+        (d/deref! :create-collection (milvus/create-collection collection-name
            {:schema (milvus-schema/with-dimension dimension)
             :index  milvus-index/default-memory-index
-            :description "hive-mcp memory store"})
+            :description "hive-mcp memory store"}))
         (swap! loaded-collections conj collection-name))
     (if (contains? @loaded-collections collection-name)
       (log/debug "Collection already loaded in this process, skipping:" collection-name)
       (do (log/info "Loading Milvus collection into memory:" collection-name)
           (try
-            @(milvus/load-collection collection-name)
+            (d/deref! :load-collection (milvus/load-collection collection-name))
             (swap! loaded-collections conj collection-name)
             (catch Exception e
               (log/debug "load-collection (may already be loaded):" (.getMessage e))

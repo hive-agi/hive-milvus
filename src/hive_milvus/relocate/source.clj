@@ -9,7 +9,8 @@
    already handled. It relies on relocation removing the row from the source,
    so the head is always fresh work — it never assumes the store returns rows
    in any order."
-  (:require [hive-milvus.relocate.enumerate :as enumerate]
+  (:require [hive-milvus.store.deref :as d]
+            [hive-milvus.relocate.enumerate :as enumerate]
             [hive-milvus.relocate.plan :as plan]
             [milvus-clj.api :as milvus]))
 
@@ -23,11 +24,11 @@
 (defrecord MilvusDrainSource [coll]
   IIdSource
   (-next-ids [_ n excluded]
-    (->> @(milvus/query-scalar coll
+    (->> (d/deref! :query-scalar (milvus/query-scalar coll
                                {:filter            (plan/exclusion-filter excluded)
                                 :limit             n
                                 :output-fields     ["id"]
-                                :consistency-level :bounded})
+                                :consistency-level :bounded}))
          (mapv :id)))
   (-describe [_] {:source :milvus-drain :collection coll}))
 

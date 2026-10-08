@@ -1,6 +1,7 @@
 (ns hive-milvus.store.entries
   "Core entry CRUD, query, search, expiry, and status helpers."
-  (:require [hive-milvus.embed.port :as port]
+  (:require [hive-milvus.store.deref :as d]
+            [hive-milvus.embed.port :as port]
             [hive-milvus.resilience.retry :refer [resilient]]
             [hive-milvus.store.index :as index]
             [hive-milvus.store.lookup :as lookup]
@@ -44,7 +45,7 @@
   (resilient config-atom
     (let [coll-name (routing/ensure-routed! (:type entry))
           record    (schema/entry->record entry coll-name)]
-      @(milvus/add coll-name [record] :upsert? true)
+      (d/deref! :add (milvus/add coll-name [record] :upsert? true))
       (:id record))))
 
 (def ReadFailure
@@ -150,7 +151,7 @@
   "FETCH port for `locate-entry`: read `id` from `coll` with its vector, merge
    `updates`, upsert in place. The merged entry, or nil when `coll` lacks `id`."
   [updates coll id]
-  (let [rows @(milvus/query-scalar coll
+  (let [rows (d/deref! :query-scalar (milvus/query-scalar coll
                 {:filter            (str "id == \"" id "\"")
                  :limit             1
                  :output-fields     ["id" "embedding" "type" "tags" "content"
@@ -158,7 +159,7 @@
                                      "duration" "expires"
                                      "access_count" "helpful_count" "unhelpful_count"
                                      "project_id"]
-                 :consistency-level :strong})]
+                 :consistency-level :strong}))]
     (when-let [row (first rows)]
       (let [existing  (schema/record->entry row)
             embedding (:embedding row)
@@ -166,7 +167,7 @@
                           (merge updates)
                           (assoc :id id :updated (schema/now-iso)))
             record    (schema/entry->record-pure merged coll embedding)]
-        @(milvus/add coll [record] :upsert? true)
+        (d/deref! :add (milvus/add coll [record] :upsert? true))
         merged))))
 
 (defn update-fields-keep-embedding!
@@ -218,32 +219,36 @@
      :detail        (dissoc res :error)
      :reconnecting? transient?}))
 
+(defn update-result
+  "The hive-spi write-contract value (`hive-spi.memory.contract/UpdateResult`)
+   for a `relocate-update` result `res` on `id`. Pure:
+
+     r/ok merged             -> the merged entry, carrying `id` as its :id
+                                (an :id inside the updates cannot rename it)
+     r/err :collector/not-found -> nil, the id is absent
+     any other r/err         -> the `update-failure` map (:error non-nil)"
+  [id res]
+  (cond
+    (r/ok? res)                            (assoc (:ok res) :id id)
+    (= :collector/not-found (:error res))  nil
+    :else                                  (update-failure id res)))
+
 (defn update-entry!
   "Update an entry's fields. Routing-aware via the CPPB-layered
    pipeline — when the merged entry's target collection differs from
    its current collection, the pipeline relocates it transparently.
 
-   Delegates to `hive-milvus.relocate.pipeline/relocate-update`, which
-   handles the COLLECT → PROMOTE → BOUNDARY flow with proper Result
-   tracking. This wrapper unwraps the pipeline's r/ok / r/err back
-   into the legacy raw-map shape callers expect: returns the merged
-   entry on success, nil when `id` is unknown, or the `update-failure`
-   map (`{:error .. :reconnecting? transient?}`) for downstream errors.
+   Delegates to `hive-milvus.relocate.pipeline/relocate-update` and answers
+   its result through `update-result`: the merged entry (carrying `id`) on
+   success, nil when `id` is unknown, or the `update-failure` map
+   (`{:error .. :reconnecting? transient?}`) for downstream errors - each a
+   value of hive-spi's UpdateResult contract.
 
    Migration path: callers that want railway-tracked errors should
    call `reloc-pipeline/relocate-update` directly instead of this
    facade."
   [config-atom id updates]
-  (let [res (reloc-pipeline/relocate-update config-atom id updates)]
-    (cond
-      (r/ok? res)
-      (:ok res)
-
-      (= :collector/not-found (:error res))
-      nil
-
-      :else
-      (update-failure id res))))
+  (update-result id (reloc-pipeline/relocate-update config-atom id updates)))
 
 (defn delete-everywhere
   "Delete `id` from every one of `colls` through DELETE (`(fn [coll id])`).
@@ -288,7 +293,7 @@
   [config-atom id]
   (resilient config-atom
     (deleted-value
-     (delete-everywhere (fn [coll id] @(milvus/delete coll [id]))
+     (delete-everywhere (fn [coll id] (d/deref! :delete (milvus/delete coll [id])))
                         (lookup/known-collections config-atom)
                         id))))
 
@@ -419,10 +424,10 @@
                         (collection-outcome
                          (fn [filt page-limit]
                            @indexed
-                           @(milvus/query-scalar coll-name
+                           (d/deref! :query-scalar (milvus/query-scalar coll-name
                               {:filter filt :limit page-limit
                                :output-fields fields
-                               :consistency-level :bounded}))
+                               :consistency-level :bounded})))
                          coll-name filter-expr limit)))
                     colls)
           {:keys [rows failed]} (fan-out outcomes)]
@@ -482,14 +487,14 @@
       (reduce
        (fn [total coll-name]
          (try
-           (let [expired @(milvus/query-scalar coll-name
+           (let [expired (d/deref! :query-scalar (milvus/query-scalar coll-name
                             {:filter (str "expires != \"\" and expires < \"" now "\"")
                              :output-fields ["id"]
-                             :limit 10000})
+                             :limit 10000}))
                  ids     (into [] (comp (map :id) (remove protected)) expired)
                  spared  (- (count expired) (count ids))]
              (when (seq ids)
-               @(milvus/delete coll-name ids)
+               (d/deref! :delete (milvus/delete coll-name ids))
                (log/info "Cleaned up" (count ids) "expired entries from Milvus collection" coll-name
                          (when (pos? spared)
                            (str "(" spared " spared by synthesis afterlife)"))))
@@ -512,10 +517,10 @@
        (fn [coll-name]
          (try
            (mapv schema/record->entry
-                 @(milvus/query-scalar coll-name
+                 (d/deref! :query-scalar (milvus/query-scalar coll-name
                     {:filter (str/join " and " filter-cls)
                      :output-fields schema/default-read-fields
-                     :limit 1000}))
+                     :limit 1000})))
            (catch Exception _ [])))
        (lookup/known-collections config-atom)))))
 
@@ -532,10 +537,10 @@
           filter-expr (str/join " and " filter-cls)]
       (some (fn [coll-name]
               (try
-                (when-let [hit (first @(milvus/query-scalar coll-name
+                (when-let [hit (first (d/deref! :query-scalar (milvus/query-scalar coll-name
                                          {:filter filter-expr
                                           :output-fields schema/default-read-fields
-                                          :limit 1}))]
+                                          :limit 1})))]
                   (schema/record->entry hit))
                 (catch Exception _ nil)))
             colls))))
@@ -562,11 +567,11 @@
 
 (defn- collection-count
   [collection-name]
-  (let [row (first @(milvus/query-scalar
+  (let [row (first (d/deref! :query-scalar (milvus/query-scalar
                      collection-name
                      {:filter "id != \"\""
                       :output-fields ["count(*)"]
-                      :limit 1}))
+                      :limit 1})))
         n (get row (keyword "count(*)"))]
     (if (nat-int? n)
       n
@@ -613,8 +618,8 @@
   (resilient config-atom
     (doseq [coll-name (lookup/known-collections config-atom)]
       (try
-        (when @(milvus/has-collection coll-name)
-          @(milvus/drop-collection coll-name)
+        (when (d/deref! :has-collection (milvus/has-collection coll-name))
+          (d/deref! :drop-collection (milvus/drop-collection coll-name))
           (index/invalidate-loaded-collection! coll-name))
         (catch Exception _ nil)))
     true))

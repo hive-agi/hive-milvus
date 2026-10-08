@@ -15,7 +15,8 @@
    median id of what came back. Nothing is assumed about ordering or about the
    shape of ids, and a range that cannot be split further raises rather than
    returning a short answer."
-  (:require [clojure.string :as str]
+  (:require [hive-milvus.store.deref :as d]
+            [clojure.string :as str]
             [milvus-clj.api :as milvus]))
 
 (def max-page
@@ -96,11 +97,11 @@
   ([coll] (all-ids coll nil))
   ([coll base]
    (let [fetch (fn [filt limit]
-                 @(milvus/query-scalar coll
+                 (d/deref! :query-scalar (milvus/query-scalar coll
                                        {:filter            filt
                                         :limit             limit
                                         :output-fields     ["id"]
-                                        :consistency-level :strong}))]
+                                        :consistency-level :strong})))]
      (try
        (vec (distinct (map :id (rows-in-range fetch base nil nil 0))))
        (catch clojure.lang.ExceptionInfo e
