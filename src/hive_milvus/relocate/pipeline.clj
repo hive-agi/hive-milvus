@@ -150,12 +150,19 @@
 (defn- write-group
   "One `-write-records` for every bundle bound to `coll`. When that batch
    fails, each record is retried on its own so every id keeps its own
-   outcome: a failed batch never loses which id failed. Returns one
-   Result<bundle> per bundle, in order."
+   outcome: a failed batch never loses which id failed. A one-record batch
+   already is that per-record write, so its err is kept without a retry.
+   Returns one Result<bundle> per bundle, in order."
   [writer coll bundles]
   (let [batch (-write-records writer coll (mapv :record bundles))]
-    (if (r/ok? batch)
+    (cond
+      (r/ok? batch)
       (mapv r/ok bundles)
+
+      (= 1 (count bundles))
+      [batch]
+
+      :else
       (mapv (fn [b]
               (let [one (-write-records writer coll [(:record b)])]
                 (if (r/ok? one) (r/ok b) one)))
