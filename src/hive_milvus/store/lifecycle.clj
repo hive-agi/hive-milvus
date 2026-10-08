@@ -1,6 +1,7 @@
 (ns hive-milvus.store.lifecycle
   "Connection lifecycle helpers for MilvusMemoryStore."
-  (:require [hive-milvus.embed.port :as port]
+  (:require [hive-milvus.store.deref :as d]
+            [hive-milvus.embed.port :as port]
             [hive-milvus.collections :as collections]
             [hive-milvus.dial :as dial]
             [hive-milvus.store.health :as health]
@@ -122,7 +123,7 @@
         ts       (schema/now-iso)]
     (try
       (let [coll-name (:collection-name @config-atom "hive_mcp_memory")
-            exists?   @(milvus/has-collection coll-name)
+            exists?   (d/deref! :has-collection (milvus/has-collection coll-name))
             latency   (- (System/currentTimeMillis) start-ms)]
         {:healthy?    exists?
          :latency-ms  latency

@@ -1,6 +1,7 @@
 (ns hive-milvus.store.staleness
   "Staleness protocol helpers for MilvusMemoryStore."
-  (:require [hive-milvus.resilience.retry :refer [resilient]]
+  (:require [hive-milvus.store.deref :as d]
+            [hive-milvus.resilience.retry :refer [resilient]]
             [hive-milvus.store.lookup :as lookup]
             [hive-milvus.store.query :as query]
             [hive-milvus.store.routing :as routing]
@@ -30,10 +31,10 @@
           fan-out (mapcat
                    (fn [coll-name]
                      (try
-                       @(milvus/query-scalar coll-name
+                       (d/deref! :query-scalar (milvus/query-scalar coll-name
                           {:filter (or filter-expr "id != \"\"")
                            :output-fields schema/default-read-fields
-                           :limit 10000})
+                           :limit 10000}))
                        (catch Exception _ [])))
                    colls)]
       (->> (mapv schema/record->entry fan-out)

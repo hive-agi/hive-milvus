@@ -1,6 +1,7 @@
 (ns hive-milvus.store.batch
   "Batch protocol helpers for MilvusMemoryStore."
-  (:require [hive-milvus.resilience.retry :refer [resilient]]
+  (:require [hive-milvus.store.deref :as d]
+            [hive-milvus.resilience.retry :refer [resilient]]
             [hive-milvus.store.lookup :as lookup]
             [hive-milvus.store.schema :as schema]
             [milvus-clj.api :as milvus]))
@@ -14,9 +15,9 @@
               fan-out (mapcat
                        (fn [coll-name]
                          (try
-                           @(milvus/get coll-name ids
+                           (d/deref! :get (milvus/get coll-name ids
                               :consistency-level :bounded
-                              :include schema/default-read-fields)
+                              :include schema/default-read-fields))
                            (catch Exception _ [])))
                        colls)
               ;; Dedupe by :id — first hit wins (default 768-d collection
