@@ -13,10 +13,18 @@
 
 (defn deref!
   "Deref `fut` within `ms` (default `timeout-ms`). Returns the value, or
-   throws a `:milvus/timeout`-tagged ex-info on timeout. `op` labels the call."
+   throws a `:milvus/timeout`-tagged ex-info on timeout. `op` labels the call.
+
+   A `java.util.concurrent.Future` (what milvus-clj returns) goes through
+   hive-weave's deref-safe; any other blocking deref (a promise) gets a timed
+   `deref`; a plain IDeref such as a test stub's `delay` has no timeout form
+   and is dereferenced directly."
   ([op fut] (deref! op fut (timeout-ms)))
   ([op fut ms]
-   (let [r (ws/deref-safe fut ms ::timeout)]
+   (let [r (cond
+             (instance? java.util.concurrent.Future fut) (ws/deref-safe fut ms ::timeout)
+             (instance? clojure.lang.IBlockingDeref fut) (deref fut ms ::timeout)
+             :else                                       (deref fut))]
      (if (identical? r ::timeout)
        (throw (ex-info (str "milvus " (name op) " timed out after " ms "ms")
                        {:milvus/timeout true :op op :timeout-ms ms}))
