@@ -165,6 +165,22 @@
                                  "x" {:error   :boundary/milvus-write-failed
                                       :message "field embedding: dim mismatch"}))))))
 
+(deftest an-incomplete-locate-is-retryable-when-its-cause-is-test
+  (testing "the relocate collector's outage error re-queues when a collection timed out"
+    (let [res (lookup/locate-collection (stub-fetch {"a" {} "b" :down}) ["a" "b"] "x")
+          m   (entries/update-failure "x" res)]
+      (is (= :milvus/read-incomplete (:error m)))
+      (is (true? (:reconnecting? m)))))
+  (testing "a non-transport failure stays permanent"
+    (is (false? (:reconnecting? (entries/update-failure
+                                 "x" {:error  :milvus/read-incomplete
+                                      :id     "x"
+                                      :failed [{:collection "a"
+                                                :message    "field embedding: dim mismatch"}]})))))
+  (testing "an absent id is never an outage"
+    (is (= (r/ok nil)
+           (lookup/locate-collection (stub-fetch {"a" {} "b" {}}) ["a" "b"] "x")))))
+
 (defn- row [id d]
   {:id id :distance d :type "note" :tags "[]" :content id :content_hash ""
    :created "2026-07-12T00:00:00Z" :updated "2026-07-12T00:00:00Z"
