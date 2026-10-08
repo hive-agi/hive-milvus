@@ -97,6 +97,15 @@
           value)))
   :on-failure error)
 
+(defn milvus-write-records!
+  "Boundary: upsert `records` into `coll` in ONE Milvus add. Result<count>
+   or r/err :boundary/milvus-write-failed. The batched twin of
+   `milvus-write!`, used by `pipeline/commit-page`."
+  [coll records]
+  (r/try-effect* :boundary/milvus-write-failed
+    (do (d/deref! :add (milvus/add coll (vec records) :upsert? true))
+        (count records))))
+
 (cppb/defboundary milvus-delete!
   [bundle-result]
   :doc

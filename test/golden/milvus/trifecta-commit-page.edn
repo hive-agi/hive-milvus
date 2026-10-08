@@ -1,0 +1,21 @@
+{:failed-batch-names-the-bad-id
+ {:batch-calls {"c1" 1},
+  :disposed #{"a" "c"},
+  :outcomes
+  {"a" :placed, "b" :boundary/milvus-write-failed, "c" :placed},
+  :ok? true},
+ :one-coll-one-add
+ {:batch-calls {"c1" 1},
+  :disposed #{"a" "b" "c"},
+  :outcomes {"a" :placed, "b" :placed, "c" :placed},
+  :ok? true},
+ :two-colls-two-adds
+ {:batch-calls {"c1" 1},
+  :disposed #{"a" "b" "c"},
+  :outcomes
+  {"a" :placed,
+   "b" :placed,
+   "c" :placed,
+   "d" :no-op,
+   "e" :embedder/embed-failed},
+  :ok? true}}
