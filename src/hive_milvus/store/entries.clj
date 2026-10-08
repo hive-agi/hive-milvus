@@ -202,22 +202,31 @@
    `:reconnecting?` says whether a retry can change the answer, the same
    flag `resilient`'s failure map carries, so a queue drain re-queues only
    transient failures. Only a `:boundary/*` effect error (a Milvus call that
-   threw) can be transient, and only when its message is a transport drop or
-   timeout (`failure/classify`). Routing, embedding and collector errors are
-   permanent. Pure."
+   threw) or a `:milvus/read-incomplete` locate (some collection could not
+   be read, see `lookup/locate-collection`) can be transient, and only when
+   a message it carries is a transport drop or timeout (`failure/classify`).
+   Routing, embedding and collector errors are permanent. Pure."
   [id res]
-  (let [category (:error res)
-        transient? (boolean
-                    (and (keyword? category)
-                         (= "boundary" (namespace category))
-                         (when-let [msg (:message res)]
-                           (or (re-find #"(?i)timed out" msg)
-                               (failure/transient?
-                                (failure/classify (ex-info msg {})))))))]
+  (let [category       (:error res)
+        transient-msg? (fn [msg]
+                         (boolean
+                          (and (string? msg)
+                               (or (re-find #"(?i)timed out" msg)
+                                   (failure/transient?
+                                    (failure/classify (ex-info msg {})))))))
+        messages       (cond
+                         (= :milvus/read-incomplete category)
+                         (map :message (:failed res))
+
+                         (and (keyword? category)
+                              (= "boundary" (namespace category)))
+                         [(:message res)]
+
+                         :else nil)]
     {:error         category
      :id            id
      :detail        (dissoc res :error)
-     :reconnecting? transient?}))
+     :reconnecting? (boolean (some transient-msg? messages))}))
 
 (defn update-result
   "The hive-spi write-contract value (`hive-spi.memory.contract/UpdateResult`)
