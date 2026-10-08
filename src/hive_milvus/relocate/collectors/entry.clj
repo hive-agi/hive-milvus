@@ -30,15 +30,25 @@
    Side-effect: one Milvus get call per known collection until the id
    hits. The underlying `find-entry-collection` already wraps Milvus
    calls in try/catch internally so no raw exceptions escape into the
-   pipeline."
+   pipeline.
+
+   The locate step is `lookup/locate-collection`, the outcome-honest
+   fold: when no collection holds `id` and at least one collection could
+   not be read, the answer is r/err :milvus/read-incomplete (an outage),
+   never :collector/not-found (an absence)."
   [{:keys [config-atom id]}]
-  (if-let [src (lookup/find-entry-collection config-atom id)]
-    (if-let [existing (query/get-entry-by-id src id)]
-      (r/ok {:id          id
-             :src-coll    src
-             :entry       existing
-             :config-atom config-atom})
-      (r/err :collector/entry-vanished
-             {:id id :src-coll src
-              :reason "find-entry-collection located the id but get-entry-by-id returned nil"}))
-    (r/err :collector/not-found {:id id})))
+  (let [located (lookup/locate-collection query/get-entry-by-id
+                                          (lookup/known-collections config-atom)
+                                          id)]
+    (if-not (r/ok? located)
+      located
+      (if-let [src (:collection (:ok located))]
+        (if-let [existing (query/get-entry-by-id src id)]
+          (r/ok {:id          id
+                 :src-coll    src
+                 :entry       existing
+                 :config-atom config-atom})
+          (r/err :collector/entry-vanished
+                 {:id id :src-coll src
+                  :reason "find-entry-collection located the id but get-entry-by-id returned nil"}))
+        (r/err :collector/not-found {:id id})))))
