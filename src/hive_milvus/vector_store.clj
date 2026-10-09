@@ -302,22 +302,43 @@
     (call! :add write-timeout-ms m-name rows :upsert? true)
     nil))
 
+(def ^:private method-impls
+  "Port method name (no leading dash) -> its implementation."
+  {"configure"         -configure*
+   "get-collection"    -get-collection*
+   "create-collection" -create-collection*
+   "delete-collection" -delete-collection*
+   "add"               -add*
+   "get"               -get*
+   "query"             -query*
+   "delete"            -delete*
+   "update"            -update*})
+
+(defn impl-map
+  "Pure: the `extend` map for a protocol whose method keys are `sig-keys`.
+   Each key, `:-get-collection` or `:get-collection`, maps to the impl of
+   that method name; a key with no impl is absent."
+  [sig-keys]
+  (into {}
+        (keep (fn [k]
+                (let [n (name k)
+                      f (get method-impls (if (str/starts-with? n "-") (subs n 1) n))]
+                  (when f [k f]))))
+        sig-keys))
+
 (defn- install!
-  "Extend the record with the host's port protocol. `extend` is a function,
-   so the protocol arrives as a runtime value — no static require of the
-   host, and re-extending on reload is idempotent."
+  "Extend the record with the host's port protocol, keyed by the protocol's
+   OWN method keys so a renamed port method cannot silently go unimplemented.
+   Throws when a port method has no implementation here."
   [proto]
-  (extend MilvusVectorCollectionStore
-    proto
-    {:configure         -configure*
-     :get-collection    -get-collection*
-     :create-collection -create-collection*
-     :delete-collection -delete-collection*
-     :add               -add*
-     :get               -get*
-     :query             -query*
-     :delete            -delete*
-     :update            -update*}))
+  (let [sig-keys (keys (:sigs proto))
+        impls    (impl-map sig-keys)
+        missing  (remove (set (keys impls)) sig-keys)]
+    (when (seq missing)
+      (throw (ex-info (str "hive-milvus implements no " (vec missing)
+                           " of the host's IVectorCollectionStore")
+                      {:missing (vec missing)})))
+    (extend MilvusVectorCollectionStore proto impls)))
 
 (defn milvus-vector-store
   "Create the Milvus-backed `IVectorCollectionStore`. Resolves the host's
