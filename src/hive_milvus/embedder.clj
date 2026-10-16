@@ -19,7 +19,8 @@
             [hive-dsl.result :as r]
             [hive-milvus.embed.port :as port]
             [hive-milvus.collection.naming :as naming]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [malli.core :as m]))
 
 (defn ^String text-to-embed
   "The text to embed for `entry`: its transient `:embed-text` when a caller
@@ -85,6 +86,46 @@
   [entry collection-name]
   (-> (embed-for-entry* entry collection-name)
       (guard-dim collection-name entry)))
+
+(defn embed-for-entries
+  "Batch form of `embed-for-entry` for ENTRIES all bound to COLLECTION-NAME.
+   Blank content and no-embed types are answered locally exactly as
+   `embed-for-entry` answers them; every other entry goes through ONE
+   `port/embed-entries` call (a single provider round-trip when the
+   embedder is batch-capable). Each vector is dim-guarded. Returns a vector
+   of Results in input order; one entry's error never displaces another's."
+  [entries collection-name]
+  (let [es       (vec entries)
+        texts    (mapv text-to-embed es)
+        local    (mapv (fn [e t]
+                         (cond
+                           (str/blank? t) (r/ok [])
+                           (port/no-embed-type? (:type e))
+                           (let [dim (try (:dimension (port/routing-for-type (:type e)))
+                                          (catch Exception _ 768))]
+                             (r/ok (vec (repeat (or dim 768) 0.0))))
+                           :else nil))
+                       es texts)
+        pending  (filterv #(nil? (local %)) (range (count es)))
+        remote   (if (seq pending)
+                   (try
+                     (port/embed-entries (mapv es pending) collection-name (mapv texts pending))
+                     (catch Exception ex
+                       (vec (repeat (count pending)
+                                    (r/err :embedder/embed-failed
+                                           {:collection collection-name
+                                            :message (ex-message ex)})))))
+                   [])
+        by-index (zipmap pending remote)]
+    (mapv (fn [i]
+            (-> (or (local i)
+                    (by-index i)
+                    (r/err :embedder/embed-failed {:collection collection-name
+                                                   :message "no result for entry"}))
+                (guard-dim collection-name (es i))))
+          (range (count es)))))
+
+(m/=> embed-for-entries [:=> [:cat [:sequential map?] :string] [:vector :map]])
 
 (defn embed-for-entry-or-throw
   "Convenience for legacy call sites that expect an embedding vector (or a
