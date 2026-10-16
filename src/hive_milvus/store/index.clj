@@ -66,19 +66,21 @@
 (defn ensure-collection!
   "Ensure the memory collection exists and is loaded into memory.
    After Milvus restart, collections exist but aren't loaded — queries
-   return empty unless we explicitly load. We memoize the load per
-   process so repeated `connect!` calls don't re-issue the expensive
-   load RPC."
+   return empty unless we explicitly load. The per-process memo
+   (`loaded-collections`) is consulted FIRST: a memo hit issues no RPC at
+   all, so a write path calling this per entry costs nothing after the
+   first call. Only a miss probes has-collection, then creates or loads.
+   `invalidate-loaded-collection!` drops the memo when reconnect detects
+   a fresh server or a dropped collection."
   [collection-name dimension]
-  (if-not (d/deref! :has-collection (milvus/has-collection collection-name))
-    (do (log/info "Creating Milvus collection:" collection-name "dim:" dimension)
-        (d/deref! :create-collection (milvus/create-collection collection-name
-           {:schema (milvus-schema/with-dimension dimension)
-            :index  milvus-index/default-memory-index
-            :description "hive-mcp memory store"}))
-        (swap! loaded-collections conj collection-name))
-    (if (contains? @loaded-collections collection-name)
-      (log/debug "Collection already loaded in this process, skipping:" collection-name)
+  (when-not (contains? @loaded-collections collection-name)
+    (if-not (d/deref! :has-collection (milvus/has-collection collection-name))
+      (do (log/info "Creating Milvus collection:" collection-name "dim:" dimension)
+          (d/deref! :create-collection (milvus/create-collection collection-name
+             {:schema (milvus-schema/with-dimension dimension)
+              :index  milvus-index/default-memory-index
+              :description "hive-mcp memory store"}))
+          (swap! loaded-collections conj collection-name))
       (do (log/info "Loading Milvus collection into memory:" collection-name)
           (try
             (d/deref! :load-collection (milvus/load-collection collection-name))
