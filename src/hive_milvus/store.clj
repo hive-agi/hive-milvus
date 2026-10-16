@@ -188,6 +188,12 @@
     {:scan-ids (fn [this opts]
                  (entries/scan-ids (:config-atom this) opts))}))
 
+(when-let [p (some-> (ns-resolve 'hive-spi.memory.ports 'IMemoryStoreBatchWrite) deref)]
+  (extend MilvusMemoryStore
+    p
+    {:add-entries! (fn [this es]
+                     (entries/add-entries! (:config-atom this) es))}))
+
 (defn create-store
   "Create a new Milvus-backed memory store.
 

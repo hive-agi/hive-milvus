@@ -145,6 +145,20 @@
   (-collection-backed? [_ collection-name]
     (collection-backed? collection-name)))
 
+(host/defsoft embed-batch-active
+  'hive-mcp.embeddings.active/embed-batch
+  :absent (fn [_embedder _texts] ::absent))
+
+(extend-type HiveMcpEmbedder
+  port/IEmbedderBatch
+  (-embed-entries [this entries collection-name contents]
+    (let [embedder (resilient-embedder-for (first entries) collection-name (first contents))
+          batch    (when embedder
+                     (r/rescue ::failed (embed-batch-active embedder (vec contents))))]
+      (if (and (sequential? batch) (= (count batch) (count contents)))
+        (mapv r/ok batch)
+        (mapv #(port/-embed-entry this %1 collection-name %2) entries contents)))))
+
 (defn available?
   "True when the host's embedding service is on the classpath right now."
   []
