@@ -41,3 +41,30 @@
   [f]
   (reset-resilience!)
   (try (f) (finally (reset-resilience!))))
+
+(defn- reachable?
+  "True when host:port accepts a TCP connection within 500 ms. A refused or
+   timed-out connect is the answer `false`, not an error."
+  [^String host port]
+  (try
+    (with-open [s (java.net.Socket.)]
+      (.connect s (java.net.InetSocketAddress. host (int port)) 500)
+      true)
+    (catch java.io.IOException _unreachable false)))
+
+(defn isolate-live
+  "clojure.test :each fixture for the integration namespaces that need a
+   Milvus at localhost:19530. Resets the resilience singletons like
+   `isolate-resilience`. When nothing listens there, the breaker is then
+   held :open with an unbounded cooldown for the test, so every wrapped
+   call fails fast with `:circuit-open`. Without that, whether a test met
+   a closed, open or half-open breaker depended on how many failures
+   earlier tests had recorded and on the 15 s cooldown clock, so the
+   failing set drifted between runs. With a server present the breaker
+   is left closed and the tests run for real."
+  [f]
+  (reset-resilience!)
+  (when-not (reachable? "localhost" 19530)
+    (circuit/configure! {:threshold 1 :cooldown-ms Long/MAX_VALUE})
+    (circuit/record-failure!))
+  (try (f) (finally (reset-resilience!))))
