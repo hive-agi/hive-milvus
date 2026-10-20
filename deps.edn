@@ -8,7 +8,7 @@
 
         ;; hive-spi — SPI leaf: the IMemoryStore protocol family lives in
         ;; hive-spi.memory.ports. CORE requires it (store/queue/schema).
-        io.github.hive-agi/hive-spi {:mvn/version "1.4.5"}
+        io.github.hive-agi/hive-spi {:mvn/version "1.4.9"}
 
         ;; hive-mcp is TEST-scope only (see the :test alias). No namespace
         ;; under src/ requires the host at load time any more: the store
@@ -18,7 +18,7 @@
 
         ;; IAddon contract leaf. Pin MUST match hive-mcp's so the addon
         ;; record satisfies the same protocol object the host registry uses.
-        io.github.hive-agi/hive-addon {:mvn/version "1.1.4"}
+        io.github.hive-agi/hive-addon {:mvn/version "1.1.7"}
 
         ;; Config DI — typed env var resolution with ADT backing
         io.github.hive-agi/hive-di {:mvn/version "0.4.19"}
@@ -42,7 +42,7 @@
         ;; Result/Railway DSL + try-effect/rescue sugar.
         ;; Already transitive via hive-cppb/hive-weave but pinned explicit
         ;; here so resilience.* doesn't depend on transitive resolution.
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.36"}}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.37"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]
@@ -52,7 +52,7 @@
                           io.github.hive-agi/hive-di   {:mvn/version "0.4.19"}}}
   :migrate {:extra-deps {org.xerial/sqlite-jdbc    {:mvn/version "3.53.4.0"}
                          org.slf4j/slf4j-simple    {:mvn/version "2.0.20"}
-                         io.github.hive-agi/hive-dsl {:mvn/version "0.5.36"}}
+                         io.github.hive-agi/hive-dsl {:mvn/version "0.5.37"}}
             :override-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}
                             io.github.hive-agi/hive-di   {:mvn/version "0.4.19"}}}
   :sync {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/sync! {:collections [\"hive-mcp-memory\" \"hive-mcp-plans\"]}))"]}
@@ -66,7 +66,7 @@
                       ;; The host, TEST-scope only: the suite exercises the
                       ;; wired path alongside the degraded one. Nothing under
                       ;; src/ may require it.
-                      io.github.hive-agi/hive-mcp {:mvn/version "1.11.1"}}
+                      io.github.hive-agi/hive-mcp {:mvn/version "1.13.0"}}
          :main-opts ["-m" "kaocha.runner"]}
 
   ;; Clojars publishing. `clojure -T:build <jar|install|deploy>`. Version =
