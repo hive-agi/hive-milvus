@@ -15,7 +15,8 @@
             [hive-milvus.store :as milvus-store]
             [hive-spi.memory.ports :as proto]
             [hive-spi.memory.ids :as mem-ids]
-            [milvus-clj.api :as milvus]))
+            [milvus-clj.api :as milvus]
+            [hive-milvus.test-isolation :as iso]))
 
 ;; =============================================================================
 ;; Shared fixture
@@ -35,6 +36,8 @@
          (finally
            (proto/reset-store! store)
            (proto/disconnect! store)))))
+
+(use-fixtures :each iso/isolate-live)
 
 (use-fixtures :once setup-milvus-store)
 

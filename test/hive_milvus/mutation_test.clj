@@ -3,15 +3,18 @@
 
    Each mutation simulates a real bug (data loss, wrong conversion, etc.)
    and verifies the contract tests would catch it."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-test.mutation :as mut]
             [hive-milvus.store :as milvus-store]
             [hive-spi.memory.ports :as proto]
-            [hive-spi.memory.ids :as mem-ids]))
+            [hive-spi.memory.ids :as mem-ids]
+            [hive-milvus.test-isolation :as iso]))
 
 ;; =============================================================================
 ;; Mutation: entry->record drops tags (silent data loss)
 ;; =============================================================================
+
+(use-fixtures :each iso/isolate-live)
 
 (mut/deftest-mutation-witness tags-serialization-caught
   hive-milvus.store/tags->str

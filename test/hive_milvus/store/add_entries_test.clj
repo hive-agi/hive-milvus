@@ -1,16 +1,19 @@
 (ns hive-milvus.store.add-entries-test
   "IMemoryStoreBatchWrite on MilvusMemoryStore, measured on a recording
    transport and a recording batch embedder."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-dsl.result :as r]
             [hive-milvus.embed.port :as port]
             [hive-milvus.recording-milvus :as rec]
             [hive-milvus.store :as store]
             [hive-spi.memory.contract :as contract]
-            [hive-spi.memory.ports :as ports]))
+            [hive-spi.memory.ports :as ports]
+            [hive-milvus.test-isolation :as iso]))
 
 (def ^:private c768 "hive_mcp_memory")
 (def ^:private c1024 "hive_mcp_memory_1024d")
+
+(use-fixtures :each iso/isolate-resilience)
 
 (defn- routing [t]
   (if (= "plan" (name (or t "note")))

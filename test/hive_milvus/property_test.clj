@@ -11,7 +11,8 @@
             [hive-test.properties :as props]
             [hive-milvus.store :as milvus-store]
             [hive-spi.memory.ports :as proto]
-            [hive-spi.memory.ids :as mem-ids]))
+            [hive-spi.memory.ids :as mem-ids]
+            [hive-milvus.test-isolation :as iso]))
 
 ;; =============================================================================
 ;; Shared Store
@@ -30,6 +31,8 @@
          (finally
            (proto/reset-store! store)
            (proto/disconnect! store)))))
+
+(use-fixtures :each iso/isolate-live)
 
 (use-fixtures :once setup-milvus-store)
 
