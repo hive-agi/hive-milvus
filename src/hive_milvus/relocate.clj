@@ -89,16 +89,12 @@
         (update :excluded-ids conj id)
         (update :failed-ids capped-conj id))))
 
-(defn- run-batch!
-  "Process `ids` concurrently with bounded parallelism (per-state
-   :concurrency, default 1), folding each outcome into a round summary.
-
-   `relocate-fn` takes an id and returns {:moved? bool} or {:error msg}.
-
-   `:stopping?` is checked before each task starts; in-flight tasks
-   complete (no mid-flight cancel of Milvus/Venice calls) so we may
-   overshoot by up to (concurrency-1) entries before halting."
-  [relocate-fn ids]
+(defn- run-concurrently
+  "Apply `f` to each of `ids` with bounded parallelism (per-state
+   :concurrency, default 1). Returns [id outcome] pairs in order; an id whose
+   task saw `:stopping?` before it started pairs with ::stopping. A thrown
+   exception is folded into `{:moved? false :error msg :id id}`."
+  [f ids]
   (let [conc     (max 1 (or (:concurrency @state) 1))
         executor (java.util.concurrent.Executors/newFixedThreadPool conc)]
     (try
@@ -109,22 +105,55 @@
                                  (fn []
                                    (if (:stopping? @state)
                                      [id ::stopping]
-                                     [id (try (relocate-fn id)
+                                     [id (try (f id)
                                               (catch Throwable e
                                                 {:moved? false :error (.getMessage e) :id id}))]))))
-                      ids)
-            pairs   (mapv (fn [^java.util.concurrent.Future f] (.get f)) futures)]
-        (reduce
-          (fn [acc [id result]]
-            (if (= ::stopping result)
-              acc
-              (record-result! acc id result)))
-          {:processed 0 :moved 0 :skipped 0 :failed 0
-           :failed-ids [] :skipped-ids [] :excluded-ids #{}
-           :last-id   nil}
-          pairs))
+                      ids)]
+        (mapv (fn [^java.util.concurrent.Future fut] (.get fut)) futures))
       (finally
         (.shutdown ^java.util.concurrent.ExecutorService executor)))))
+
+(defn- fold-pairs
+  "Fold [id outcome] pairs into a round summary, skipping ::stopping."
+  [pairs]
+  (reduce
+    (fn [acc [id result]]
+      (if (= ::stopping result)
+        acc
+        (record-result! acc id result)))
+    {:processed 0 :moved 0 :skipped 0 :failed 0
+     :failed-ids [] :skipped-ids [] :excluded-ids #{}
+     :last-id   nil}
+    pairs))
+
+(defn- run-batch!
+  "Process `ids` concurrently with bounded parallelism (per-state
+   :concurrency, default 1), folding each outcome into a round summary.
+
+   `relocate-fn` takes an id and returns {:moved? bool} or {:error msg}.
+
+   `:stopping?` is checked before each task starts; in-flight tasks
+   complete (no mid-flight cancel of Milvus/Venice calls) so we may
+   overshoot by up to (concurrency-1) entries before halting."
+  [relocate-fn ids]
+  (fold-pairs (run-concurrently relocate-fn ids)))
+
+(defn- run-page!
+  "Batched twin of `run-batch!` for the pipeline-backed modes: prepare every
+   id concurrently (collect, route, embed), then write the whole page with ONE
+   upsert per target collection (`pipeline/commit-page`). `unwrap` turns each
+   id's Result into the raw {:moved? ..} / {:error ..} shape the runner folds.
+   A failed batch write falls back to per-record writes, so every failed id
+   is still named."
+  [{:keys [prepare-fn writer disposition unwrap]} ids]
+  (let [pairs    (run-concurrently prepare-fn ids)
+        stopped  (filterv (fn [[_ res]] (= ::stopping res)) pairs)
+        ;; a thrown prepare is folded by run-concurrently into
+        ;; {:moved? false :error msg}, which is not r/ok and passes through
+        prepared (filterv (fn [[_ res]] (not= ::stopping res)) pairs)
+        placed   (pipeline/commit-page writer disposition prepared)]
+    (fold-pairs (into (mapv (fn [[id res]] [id (unwrap id res)]) placed)
+                      stopped))))
 
 (defn- merge-batch-into-state!
   [batch-result]
@@ -163,7 +192,7 @@
   (checkpoint-cursor! cursor-path))
 
 (defn- runner-loop!
-  [{:keys [source relocate-fn cursor-path batch-size max-excluded]}]
+  [{:keys [source run-page cursor-path batch-size max-excluded]}]
   (try
     (loop []
       (let [{:keys [stopping? excluded-ids]} @state
@@ -171,7 +200,7 @@
             ids    (if (or stopping? over?)
                      []
                      (src/-next-ids source batch-size excluded-ids))
-            batch  (when (seq ids) (run-batch! relocate-fn ids))
+            batch  (when (seq ids) (run-page ids))
             _      (when batch
                      (merge-batch-into-state! batch)
                      (checkpoint-cursor! cursor-path)
@@ -208,6 +237,50 @@
        :error  (or (:error res) :copy/failed)
        :id     id})))
 
+(defn unwrap-placed
+  "Pure: the raw shape the runner folds, from a `commit-page` Result for `id`.
+   r/ok -> the place-one answer with :moved? mirroring :placed?. An outcome
+   that is already raw (a prepare that threw) is kept. A :collector/not-found
+   err is a skip (`entries/relocate-entry!` answers it the same way); any
+   other err is a named failure."
+  [id res]
+  (cond
+    (r/ok? res)
+    (let [v (:ok res)] (assoc v :moved? (:placed? v)))
+
+    (contains? res :moved?)
+    res
+
+    (= :collector/not-found (:error res))
+    {:moved? false :from nil :to nil :id id :reason :not-found}
+
+    :else
+    {:moved? false :error (or (:error res) :relocate/failed) :id id}))
+
+(defn- page-runner
+  "ids -> round summary. The pipeline modes batch their writes (`run-page!`):
+   one upsert per target collection per page. An injected `relocate-fn`, or
+   `batch-writes?` false, keeps the per-id path (`run-batch!`)."
+  [config-atom mode relocate-fn batch-writes?]
+  (cond
+    relocate-fn
+    #(run-batch! relocate-fn %)
+
+    (not batch-writes?)
+    #(run-batch! (case mode
+                   :copy (fn [id] (copy-entry! config-atom id))
+                   :move (fn [id] (entries/relocate-entry! config-atom id)))
+                 %)
+
+    :else
+    #(run-page! {:prepare-fn  (fn [id] (pipeline/prepare-one config-atom id))
+                 :writer      (pipeline/milvus-writer)
+                 :disposition (case mode
+                                :copy (pipeline/keep-source)
+                                :move (pipeline/delete-source))
+                 :unwrap      unwrap-placed}
+                %)))
+
 (defn start!
   "Spawn a background relocation pass. Returns immediately with the new
    job's metadata, or {:already-running? true} when a previous job is
@@ -224,19 +297,25 @@
    hard failures) are excluded from subsequent pages so the run terminates; they
    are reported, never silently counted as placed.
 
+   Writes are batched: each page is prepared concurrently, then written with
+   ONE upsert per target collection (`pipeline/commit-page`). A failed batch
+   falls back to per-record writes so every failed id is still named.
+
    Opts: :mode :source-coll :batch-size :cursor-base :concurrency :max-excluded
          :id-source   (IIdSource, overrides the mode's default source)
-         :relocate-fn (id -> result, overrides the mode's default operation)"
+         :relocate-fn (id -> result, overrides the mode's default operation)
+         :batch-writes? (default true; false writes one record per round-trip)"
   ([config-atom]
    (start! config-atom {}))
   ([config-atom {:keys [mode source-coll batch-size cursor-base concurrency
-                        id-source relocate-fn max-excluded]
-                 :or   {mode         :move
-                        source-coll  default-source-collection
-                        batch-size   default-batch-size
-                        cursor-base  default-cursor-base
-                        concurrency  1
-                        max-excluded plan/default-max-excluded}}]
+                        id-source relocate-fn max-excluded batch-writes?]
+                 :or   {mode          :move
+                        source-coll   default-source-collection
+                        batch-size    default-batch-size
+                        cursor-base   default-cursor-base
+                        concurrency   1
+                        max-excluded  plan/default-max-excluded
+                        batch-writes? true}}]
    (if (= :running (:status @state))
      {:already-running? true :status (status)}
      (let [job-id      (str "reloc-" (System/currentTimeMillis))
@@ -246,10 +325,7 @@
                            (case mode
                              :copy (src/milvus-snapshot-source source-coll)
                              :move (src/milvus-drain-source source-coll)))
-           relocate    (or relocate-fn
-                           (case mode
-                             :copy #(copy-entry! config-atom %)
-                             :move #(entries/relocate-entry! config-atom %)))]
+           run-page    (page-runner config-atom mode relocate-fn batch-writes?)]
        (reset! state {:job-id        job-id
                       :status        :running
                       :mode          mode
@@ -271,7 +347,7 @@
                       :cursor-path   cursor-path
                       :error-message nil})
        (future (runner-loop! {:source       source
-                              :relocate-fn  relocate
+                              :run-page     run-page
                               :cursor-path  cursor-path
                               :batch-size   batch-size
                               :max-excluded max-excluded}))

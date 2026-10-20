@@ -1,0 +1,5 @@
+{:all-miss [:absent],
+ :hit-after-fail [:hit "b"],
+ :hit-first [:hit "a"],
+ :no-collections [:absent],
+ :outage [:incomplete ["b"]]}

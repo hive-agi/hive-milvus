@@ -8,7 +8,8 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-test.memory.store-contract :as contract]
             [hive-milvus.store :as milvus-store]
-            [hive-spi.memory.ports :as proto]))
+            [hive-spi.memory.ports :as proto]
+            [hive-milvus.test-isolation :as iso]))
 
 ;; =============================================================================
 ;; Factory Binding
@@ -26,7 +27,7 @@
                store)]
     (f)))
 
-(use-fixtures :each bind-milvus-factory)
+(use-fixtures :each (clojure.test/join-fixtures [iso/isolate-live bind-milvus-factory]))
 
 ;; =============================================================================
 ;; Protocol Satisfaction

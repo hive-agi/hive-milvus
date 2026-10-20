@@ -123,3 +123,33 @@
 
 (defn collection-backed? [collection-name]
   (-collection-backed? (current) collection-name))
+
+(defonce ^:private -iembedderbatch-defined? (atom false))
+
+(when (compare-and-set! -iembedderbatch-defined? false true)
+  (defprotocol IEmbedderBatch
+    "Optional extension of IEmbedder: embed many entries bound for ONE
+     collection in a single provider round-trip."
+    (-embed-entries [this entries collection-name contents]
+      "ENTRIES and CONTENTS are parallel sequentials. Returns a vector of
+       Results, one per entry in order: (r/ok vec) | (r/err kw {...}).")))
+
+(defn batch-capable?
+  "True when the installed embedder can embed a batch in one call."
+  []
+  (satisfies? IEmbedderBatch (current)))
+
+(m/=> batch-capable? [:=> [:cat] :boolean])
+
+(defn embed-entries
+  "Embed ENTRIES (parallel to CONTENTS) for COLLECTION-NAME: one batch call
+   when the installed embedder is IEmbedderBatch, else one embed-entry per
+   entry. Returns a vector of Results in input order."
+  [entries collection-name contents]
+  (let [e (current)]
+    (if (satisfies? IEmbedderBatch e)
+      (vec (-embed-entries e entries collection-name contents))
+      (mapv #(-embed-entry e %1 collection-name %2) entries contents))))
+
+(m/=> embed-entries [:=> [:cat [:sequential :any] :string [:sequential :string]]
+                     [:vector :map]])

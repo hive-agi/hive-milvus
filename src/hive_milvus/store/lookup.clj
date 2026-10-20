@@ -10,7 +10,8 @@
   (:require [hive-milvus.store.query :as query]
             [hive-milvus.store.routing :as routing]
             [malli.core :as m]
-            [hive-milvus.embed.port :as port]))
+            [hive-milvus.embed.port :as port]
+            [hive-dsl.result :as r]))
 
 (defn legacy-coll-name
   "The collection pinned by `:collection-name` in config, or nil when the
@@ -72,6 +73,42 @@
             (when (query/get-entry-by-id coll id) coll)
             (catch Exception _ nil)))
         (known-collections config-atom)))
+
+(defn locate-collection
+  "Outcome-honest twin of `find-entry-collection`: ask each of `colls`, in
+   order, for `id` through FETCH (`(fn [coll id] value-or-nil)`), stopping
+   at the first value.
+
+     r/ok {:collection c :value v}  collection `c` answered with `v`
+     r/ok nil                       EVERY collection answered and none holds
+                                    `id` - a true absence. A collection that
+                                    does not exist (`missing-collection?`)
+                                    counts as answered: it holds nothing.
+     r/err :milvus/read-incomplete {:id :failed [{:collection :message}]}
+                                    no value found AND at least one
+                                    collection failed, so absence cannot be
+                                    told from an outage
+
+   A hit wins over a failing neighbour. Never throws. Pure given FETCH."
+  [fetch colls id]
+  (let [{:keys [found failed]}
+        (reduce (fn [acc coll]
+                  (try
+                    (if-some [v (fetch coll id)]
+                      (reduced (assoc acc :found {:collection coll :value v}))
+                      acc)
+                    (catch Exception e
+                      (if (missing-collection? e)
+                        acc
+                        (update acc :failed conj
+                                {:collection coll
+                                 :message    (or (ex-message e) (str (class e)))})))))
+                {:failed []}
+                colls)]
+    (cond
+      (some? found) (r/ok found)
+      (seq failed)  (r/err :milvus/read-incomplete {:id id :failed failed})
+      :else         (r/ok nil))))
 
 (m/=> known-collections
       [:=> [:cat [:fn {:error/message "config atom"} #(instance? clojure.lang.IAtom %)]]

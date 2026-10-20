@@ -15,7 +15,8 @@
             [hive-spi.memory.conformance :as conformance]
             [hive-spi.memory.contract :as contract]
             [hive-test.trifecta :refer [deftrifecta]]
-            [hive-spi.memory.ports :as ports]))
+            [hive-spi.memory.ports :as ports]
+            [hive-milvus.test-isolation :as iso]))
 
 ;; =============================================================================
 ;; update-result: relocate-update Result -> UpdateResult
@@ -97,6 +98,8 @@
   (fn [f]
     (reset! restore (fake/install!))
     (try (f) (finally (@restore)))))
+
+(use-fixtures :each iso/isolate-resilience)
 
 (defn- fake-store
   "A MilvusMemoryStore over a fresh in-memory client."

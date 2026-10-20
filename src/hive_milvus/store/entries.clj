@@ -19,7 +19,8 @@
             [hive-milvus.store.search.target :as search-target]
             [hive-milvus.store.search.boundary :as search-boundary]
             [malli.core :as m]
-            [hive-milvus.failure :as failure]))
+            [hive-milvus.failure :as failure]
+            [hive-milvus.embedder :as embedder]))
 
 (defn- apply-order-by
   [entries order-by]
@@ -47,6 +48,85 @@
           record    (schema/entry->record entry coll-name)]
       (d/deref! :add (milvus/add coll-name [record] :upsert? true))
       (:id record))))
+
+(def default-batch-records
+  "Records per milvus upsert in `add-entries!` unless the store config
+   carries :batch-records."
+  256)
+
+(defn- group-by-collection
+  "[[collection-info [[input-index entry] ...]] ...] in first-seen order."
+  [entries]
+  (let [indexed (map-indexed vector entries)
+        groups  (group-by #(:collection-name (routing/coll-for-entry (second %))) indexed)]
+    (->> groups
+         (map (fn [[coll ies]]
+                [(routing/coll-for-entry (second (first ies))) ies]))
+         (sort-by #(ffirst (second %)))
+         vec)))
+
+(defn- embed-failure
+  "The add-entry! failure map for an entry whose embedding failed."
+  [res id]
+  {:success? false :error (:error res) :id id
+   :errors [(str "embed failed: " (name (:error res)))]})
+
+(defn- write-chunk!
+  "Embed and upsert one chunk of [index entry] pairs bound for COLL. Returns
+   {index result}. An embed error answers only its own entry; an upsert
+   that refuses the chunk answers every entry of the chunk with the failure."
+  [config-atom coll ies]
+  (let [es      (mapv second ies)
+        ids     (mapv #(or (:id %) (:id (schema/entry->record-pure % coll nil))) es)
+        es      (mapv #(assoc %1 :id %2) es ids)
+        embs    (embedder/embed-for-entries es coll)
+        ok-idx  (filterv #(r/ok? (embs %)) (range (count es)))
+        records (mapv #(schema/entry->record-pure (es %) coll (:ok (embs %))) ok-idx)
+        landed  (when (seq records)
+                  (resilient config-atom
+                    (d/deref! :add (milvus/add coll records :upsert? true))
+                    ::landed))
+        fail    (when-not (= ::landed landed) landed)]
+    (into {}
+          (map (fn [k]
+                 (let [[i _] (ies k)
+                       res   (embs k)]
+                   [i (cond
+                        (r/err? res) (embed-failure res (ids k))
+                        fail         fail
+                        :else        (ids k))])))
+          (range (count es)))))
+
+(defn add-entries!
+  "IMemoryStoreBatchWrite: write ENTRIES grouped by routed collection. Per
+   collection: one ensure-collection!, then per chunk of :batch-records
+   (default 256) one batch embed and one milvus upsert, under the resilient
+   circuit/retry wrapper. Returns one add-entry! result per entry in input
+   order; a failing record or chunk never loses the others' results."
+  [config-atom entries]
+  (let [es    (vec entries)
+        cap   (max 1 (or (:batch-records @config-atom) default-batch-records))
+        by-ix (reduce
+               (fn [acc [{:keys [collection-name dimension]} ies]]
+                 (let [ensured (try (index/ensure-collection! collection-name dimension) nil
+                                    (catch Exception e
+                                      {:success? false :error :milvus/ensure-failed
+                                       :errors [(or (ex-message e) (str (class e)))]}))]
+                   (if ensured
+                     (into acc (map (fn [[i _]] [i ensured])) ies)
+                     (reduce (fn [a chunk]
+                               (into a (try (write-chunk! config-atom collection-name (vec chunk))
+                                            (catch Exception e
+                                              (let [f {:success? false :error :milvus/batch-failed
+                                                       :errors [(or (ex-message e) (str (class e)))]}]
+                                                (into {} (map (fn [[i _]] [i f])) chunk))))))
+                             acc
+                             (partition-all cap ies)))))
+               {}
+               (group-by-collection es))]
+    (mapv by-ix (range (count es)))))
+
+(m/=> add-entries! [:=> [:cat :any [:sequential map?]] [:vector :any]])
 
 (def ReadFailure
   "One collection that could not answer a read."
@@ -202,22 +282,31 @@
    `:reconnecting?` says whether a retry can change the answer, the same
    flag `resilient`'s failure map carries, so a queue drain re-queues only
    transient failures. Only a `:boundary/*` effect error (a Milvus call that
-   threw) can be transient, and only when its message is a transport drop or
-   timeout (`failure/classify`). Routing, embedding and collector errors are
-   permanent. Pure."
+   threw) or a `:milvus/read-incomplete` locate (some collection could not
+   be read, see `lookup/locate-collection`) can be transient, and only when
+   a message it carries is a transport drop or timeout (`failure/classify`).
+   Routing, embedding and collector errors are permanent. Pure."
   [id res]
-  (let [category (:error res)
-        transient? (boolean
-                    (and (keyword? category)
-                         (= "boundary" (namespace category))
-                         (when-let [msg (:message res)]
-                           (or (re-find #"(?i)timed out" msg)
-                               (failure/transient?
-                                (failure/classify (ex-info msg {})))))))]
+  (let [category       (:error res)
+        transient-msg? (fn [msg]
+                         (boolean
+                          (and (string? msg)
+                               (or (re-find #"(?i)timed out" msg)
+                                   (failure/transient?
+                                    (failure/classify (ex-info msg {})))))))
+        messages       (cond
+                         (= :milvus/read-incomplete category)
+                         (map :message (:failed res))
+
+                         (and (keyword? category)
+                              (= "boundary" (namespace category)))
+                         [(:message res)]
+
+                         :else nil)]
     {:error         category
      :id            id
      :detail        (dissoc res :error)
-     :reconnecting? transient?}))
+     :reconnecting? (boolean (some transient-msg? messages))}))
 
 (defn update-result
   "The hive-spi write-contract value (`hive-spi.memory.contract/UpdateResult`)
