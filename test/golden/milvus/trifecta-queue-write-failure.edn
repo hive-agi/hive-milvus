@@ -1,0 +1,12 @@
+{:entry false,
+ :error-and-false true,
+ :error-only true,
+ :id false,
+ :nil false,
+ :queued false,
+ :queued-refused true,
+ :queued-success false,
+ :success-false true,
+ :success-nil false,
+ :true false,
+ :vector false}
