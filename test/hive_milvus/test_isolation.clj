@@ -52,19 +52,25 @@
       true)
     (catch java.io.IOException _unreachable false)))
 
+(def ^:private circuit-open
+  "The fail map an open breaker answers, with a fixed :retry-after so two
+   calls in one test compare equal."
+  {:success? false :error :circuit-open :retry-after 0 :reconnecting? true})
+
 (defn isolate-live
   "clojure.test :each fixture for the integration namespaces that need a
    Milvus at localhost:19530. Resets the resilience singletons like
-   `isolate-resilience`. When nothing listens there, the breaker is then
-   held :open with an unbounded cooldown for the test, so every wrapped
-   call fails fast with `:circuit-open`. Without that, whether a test met
-   a closed, open or half-open breaker depended on how many failures
-   earlier tests had recorded and on the 15 s cooldown clock, so the
-   failing set drifted between runs. With a server present the breaker
-   is left closed and the tests run for real."
+   `isolate-resilience`. When nothing listens there, `circuit/check` is
+   redefined for the test to answer one constant open-breaker map, so every
+   wrapped call fails fast and identically. Without that, whether a test met
+   a closed, open or half-open breaker depended on how many failures earlier
+   tests had recorded and on the 15 s cooldown clock, and the failing set
+   drifted between runs. With a server present the real breaker runs."
   [f]
   (reset-resilience!)
-  (when-not (reachable? "localhost" 19530)
-    (circuit/configure! {:threshold 1 :cooldown-ms Long/MAX_VALUE})
-    (circuit/record-failure!))
-  (try (f) (finally (reset-resilience!))))
+  (try
+    (if (reachable? "localhost" 19530)
+      (f)
+      (with-redefs [circuit/check (constantly circuit-open)]
+        (f)))
+    (finally (reset-resilience!))))
