@@ -1,12 +1,15 @@
 (ns hive-milvus.store.ensure-memo-test
   "ensure-collection! consults its loaded memo before any RPC: N writes to
    one collection probe has-collection once."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-milvus.fake-milvus :as fake]
             [hive-milvus.recording-milvus :as rec]
             [hive-milvus.store.index :as index]
             [hive-milvus.store :as store]
-            [hive-spi.memory.ports :as ports]))
+            [hive-spi.memory.ports :as ports]
+            [hive-milvus.test-isolation :as iso]))
+
+(use-fixtures :each iso/isolate-resilience)
 
 (deftest memo-hit-skips-has-collection
   (let [{:keys [calls restore]} (rec/install!)]
