@@ -20,7 +20,8 @@
    queue without standing up Milvus."
   (:require [hive-weave.parallel :as parallel]
             [taoensso.timbre :as log]
-            [hive-spi.memory.ports :as proto])
+            [hive-spi.memory.ports :as proto]
+            [hive-spi.memory.contract :as contract])
   (:import [clojure.lang PersistentQueue]))
 
 ;; =============================================================================
@@ -232,12 +233,11 @@
    `resilient` answers once its retry budget is spent, and the shape the
    circuit breaker answers while open.
 
-   Mirrors `hive-spi.memory.contract/failure?` (hive-spi f9e3025), which no
-   released hive-spi carries yet; switch to it when the pin can move."
+   Delegates to `hive-spi.memory.contract/failure?`, the contract's single
+   definition of a refused write. Kept as a var so existing callers and
+   tests stay stable."
   [x]
-  (and (map? x)
-       (or (false? (:success? x))
-           (some? (:error x)))))
+  (contract/failure? x))
 
 (defn write-outcome
   "Classify a write verb's return value for the drain:
