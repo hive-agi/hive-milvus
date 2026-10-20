@@ -6,7 +6,7 @@
         org.slf4j/slf4j-simple    {:mvn/version "2.0.20"}
         io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}
         io.github.hive-agi/hive-di {:mvn/version "0.4.19"}
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.36"}}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.37"}}
 
  :aliases
  {:with-milvus {:extra-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}}}
