@@ -27,7 +27,13 @@
   (doseq [sym service-targets]
     (is (host/available? sym) (str sym " must exist on the host"))))
 
-(deftest embed-text-has-a-home-on-the-paired-host
-  (testing "the moved home or the legacy one, never neither"
-    (is (or (host/available? 'hive-mcp.embeddings.active/embed-text)
-            (host/available? 'hive-mcp.chroma.embeddings/embed-text)))))
+(deftest embed-text-has-its-active-home-on-the-paired-host
+  (testing "the test host is pinned past the move, so the active home alone
+            must resolve; the legacy chroma home is no longer a fallback"
+    (is (host/available? 'hive-mcp.embeddings.active/embed-text))
+    (is (host/available? 'hive-mcp.embeddings.active/embed-batch))))
+
+(deftest the-adapter-names-no-legacy-embed-home
+  (require 'hive-milvus.embed.adapter)
+  (is (nil? (resolve 'hive-milvus.embed.adapter/embed-text-legacy))
+      "the pre-feb2d8cd hive-mcp.chroma.embeddings seam is gone"))
