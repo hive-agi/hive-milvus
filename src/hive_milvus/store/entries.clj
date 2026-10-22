@@ -2,7 +2,7 @@
   "Core entry CRUD, query, search, expiry, and status helpers."
   (:require [hive-milvus.store.deref :as d]
             [hive-milvus.embed.port :as port]
-            [hive-milvus.resilience.retry :refer [resilient]]
+            [hive-milvus.resilience.retry :refer [resilient resilient-within]]
             [hive-milvus.store.index :as index]
             [hive-milvus.store.lookup :as lookup]
             [hive-milvus.store.query :as query]
@@ -20,7 +20,9 @@
             [hive-milvus.store.search.boundary :as search-boundary]
             [malli.core :as m]
             [hive-milvus.failure :as failure]
-            [hive-milvus.embedder :as embedder]))
+            [hive-milvus.embedder :as embedder]
+            [hive-milvus.store.guard :as guard]
+            [hive-milvus.resilience.budget :as budget]))
 
 (defn- apply-order-by
   [entries order-by]
@@ -42,12 +44,17 @@
          vec)))
 
 (defn add-entry!
+  "Write one entry. A record that does not fit the collection schema is
+   refused before it is embedded or sent (`guard/refusal`, permanent); the
+   write itself runs inside the write time budget (`budget`)."
   [config-atom entry]
-  (resilient config-atom
-    (let [coll-name (routing/ensure-routed! (:type entry))
-          record    (schema/entry->record entry coll-name)]
-      (d/deref! :add (milvus/add coll-name [record] :upsert? true))
-      (:id record))))
+  (or (guard/refusal (schema/entry->record-pure entry nil nil))
+      (resilient-within config-atom budget/reconnect-wait-ms
+        (let [coll-name (routing/ensure-routed! (:type entry))
+              record    (schema/entry->record entry coll-name)]
+          (d/deref! :add (milvus/add coll-name [record] :upsert? true)
+                    budget/write-call-timeout-ms)
+          (:id record)))))
 
 (def default-batch-records
   "Records per milvus upsert in `add-entries!` unless the store config
@@ -73,25 +80,33 @@
 
 (defn- write-chunk!
   "Embed and upsert one chunk of [index entry] pairs bound for COLL. Returns
-   {index result}. An embed error answers only its own entry; an upsert
-   that refuses the chunk answers every entry of the chunk with the failure."
+   {index result}. An entry that does not fit the schema is refused before
+   embedding (`guard/refusal`) and answers only for itself; an embed error
+   answers only its own entry; an upsert that refuses the chunk answers
+   every remaining entry of the chunk with the failure."
   [config-atom coll ies]
   (let [es      (mapv second ies)
-        ids     (mapv #(or (:id %) (:id (schema/entry->record-pure % coll nil))) es)
+        probes  (mapv #(schema/entry->record-pure % coll nil) es)
+        ids     (mapv #(or (:id %1) (:id %2)) es probes)
         es      (mapv #(assoc %1 :id %2) es ids)
-        embs    (embedder/embed-for-entries es coll)
-        ok-idx  (filterv #(r/ok? (embs %)) (range (count es)))
-        records (mapv #(schema/entry->record-pure (es %) coll (:ok (embs %))) ok-idx)
+        refused (mapv #(some-> (guard/refusal %1) (assoc :id %2)) probes ids)
+        fit     (filterv #(nil? (refused %)) (range (count es)))
+        embs    (when (seq fit) (embedder/embed-for-entries (mapv es fit) coll))
+        emb-of  (zipmap fit embs)
+        ok-idx  (filterv #(r/ok? (emb-of %)) fit)
+        records (mapv #(schema/entry->record-pure (es %) coll (:ok (emb-of %))) ok-idx)
         landed  (when (seq records)
-                  (resilient config-atom
-                    (d/deref! :add (milvus/add coll records :upsert? true))
+                  (resilient-within config-atom budget/reconnect-wait-ms
+                    (d/deref! :add (milvus/add coll records :upsert? true)
+                              budget/write-call-timeout-ms)
                     ::landed))
         fail    (when-not (= ::landed landed) landed)]
     (into {}
           (map (fn [k]
                  (let [[i _] (ies k)
-                       res   (embs k)]
+                       res   (emb-of k)]
                    [i (cond
+                        (refused k)  (refused k)
                         (r/err? res) (embed-failure res (ids k))
                         fail         fail
                         :else        (ids k))])))
