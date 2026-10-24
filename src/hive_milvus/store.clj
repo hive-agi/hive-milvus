@@ -34,7 +34,8 @@
             [hive-milvus.store.analytics :as analytics]
             [hive-milvus.store.staleness :as staleness]
             [hive-milvus.store.batch :as batch]
-            [hive-spi.memory.ports :as proto]))
+            [hive-spi.memory.ports :as proto]
+            [hive-milvus.store.write :as write]))
 
 ;; =========================================================================
 ;; Re-exports — preserve hive-milvus.store/* API for the existing test
@@ -216,3 +217,11 @@
                                       :port 19530
                                       :collection-name "hive_mcp_memory"}
                                      opts)))))
+
+(when-let [p (try
+               (some-> (requiring-resolve 'hive-spi.memory.receipt/IMemoryStoreAddReceipt) deref)
+               (catch java.io.FileNotFoundException _ nil))]
+  (extend MilvusMemoryStore
+    p
+    {:-add-entry-returning! (fn [this entry]
+                              (write/add-entry-returning! (:config-atom this) entry))}))
