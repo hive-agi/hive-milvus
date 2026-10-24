@@ -17,34 +17,32 @@
             [hive-milvus.store.lookup :as lookup]
             [hive-milvus.store.query :as query]))
 
-(cppb/defcollector collect-existing-entry
-  "Locate `id` across known Milvus collections, read it back.
-
-   Bundle in:  {:config-atom a :id id}
-   Bundle out: {:id id :src-coll s :entry e :config-atom a}
-
-   Returns r/err :collector/not-found when every collection answered and
-   none holds the id.
-
-   Side-effect: one Milvus get call per known collection until the id
-   hits. The entry the hit read is the entry returned, so there is no
-   second read and no race window between locating and reading.
-
-   The locate step is `lookup/locate-collection`, the outcome-honest
-   fold. It catches every per-collection exception, so no raw exception
-   escapes into the pipeline: when no collection holds `id` and at least
-   one collection could not be read, the answer is r/err
-   :milvus/read-incomplete (an outage), never :collector/not-found (an
-   absence)."
-  [{:keys [config-atom id]}]
-  (let [located (lookup/locate-collection query/get-entry-by-id
-                                          (lookup/known-collections config-atom)
-                                          id)]
+(defn collect-update-with
+  "Locate an update snapshot through FETCH (coll id -> snapshot or nil).
+   Keep the vector on the pipeline bundle, never on its domain :entry.
+   Uses the same absence/outage policy as ordinary collection."
+  [fetch colls {:keys [id] :as bundle}]
+  (let [located (lookup/locate-collection fetch colls id)]
     (if-not (r/ok? located)
       located
-      (if-let [{src :collection existing :value} (:ok located)]
-        (r/ok {:id          id
-               :src-coll    src
-               :entry       existing
-               :config-atom config-atom})
+      (if-let [{src :collection snapshot :value} (:ok located)]
+        (r/ok (assoc bundle :src-coll src
+                           :entry (:entry snapshot)
+                           :stored-embedding (:stored-embedding snapshot)))
         (r/err :collector/not-found {:id id})))))
+
+(cppb/defcollector collect-existing-entry
+  "Locate and read an entry with outcome-honest absence/outage handling.
+   With :include-vector? collect the stored vector in the same snapshot
+   for an update; ordinary relocation avoids transferring that vector."
+  [{:keys [config-atom id include-vector?]}]
+  (let [colls (lookup/known-collections config-atom)]
+    (if include-vector?
+      (collect-update-with query/get-entry-with-vector colls
+                           {:id id :config-atom config-atom})
+      (let [located (lookup/locate-collection query/get-entry-by-id colls id)]
+        (if-not (r/ok? located)
+          located
+          (if-let [{src :collection existing :value} (:ok located)]
+            (r/ok {:id id :src-coll src :entry existing :config-atom config-atom})
+            (r/err :collector/not-found {:id id})))))))
