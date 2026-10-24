@@ -47,11 +47,16 @@
     (is (nil? (ports/get-entry s "oversize")))))
 
 (deftest optional-protocol-is-wired-when-present
-  (when-let [protocol-var (try
-                           (requiring-resolve 'hive-spi.memory.receipt/IMemoryStoreAddReceipt)
-                           (catch java.io.FileNotFoundException _old-spi nil))]
-    (let [s (store/create-store {:collection-name fake/collection})
-          add! (requiring-resolve 'hive-spi.memory.receipt/-add-entry-returning!)
-          receipt (add! s {:id "through-port" :content "receipt"})]
-      (is (satisfies? @protocol-var s))
-      (is (= (:entry receipt) (ports/get-entry s (:id receipt)))))))
+  (let [protocol-var (try
+                       (requiring-resolve 'hive-spi.memory.receipt/IMemoryStoreAddReceipt)
+                       (catch java.io.FileNotFoundException _old-spi nil))
+        protocol (some-> protocol-var deref)
+        s (store/create-store {:collection-name fake/collection})]
+    (if protocol
+      (let [add! (requiring-resolve 'hive-spi.memory.receipt/-add-entry-returning!)
+            receipt (add! s {:id "through-port" :content "receipt"})]
+        (is (satisfies? protocol s))
+        (is (= (:entry receipt) (ports/get-entry s (:id receipt)))))
+      (do
+        (is (= "fallback" (ports/add-entry! s {:id "fallback" :content "legacy"})))
+        (is (= "legacy" (:content (ports/get-entry s "fallback"))))))))
