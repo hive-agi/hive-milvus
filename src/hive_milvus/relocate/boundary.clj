@@ -55,28 +55,26 @@
             vec)))
 
 (defn keep-vector
-  "`bundle` with `:kept-embedding` when its stored vector is still the right
-   one (`p-record/vector-still-valid?`) and `read` (coll id -> Result<vector>)
-   returns one of the collection's width. Anything else, a failed read
-   included, leaves the bundle as it is and the record gets a fresh embed:
-   keeping the vector only ever saves work, it never decides correctness."
+  "Reuse a valid vector from the update snapshot, without a second RPC.
+   Legacy bundles without :stored-embedding still read through READ.
+   A missing or invalid snapshot vector falls back to embedding, not a
+   second snapshot: the vector and entry must describe the same read."
   [read {:keys [src-coll id] :as bundle}]
   (if-not (p-record/vector-still-valid? bundle)
     bundle
-    (let [res      (read src-coll id)
+    (let [res      (if (contains? bundle :stored-embedding)
+                     (r/ok (:stored-embedding bundle))
+                     (read src-coll id))
           v        (when (r/ok? res) (:ok res))
           expected (naming/dim-of src-coll)]
       (if (and (seq v) (or (nil? expected) (= expected (count v))))
-        (assoc bundle :kept-embedding v)
+        (assoc bundle :kept-embedding (vec v))
         bundle))))
 
 (cppb/defpromoter keep-stored-vector
-  "Promote step before `build-target-record`: read the stored vector into
-   `:kept-embedding` when the update leaves the text to embed unchanged, so
-   the record is built without calling the embedder. Always r/ok.
-
-   Bundle in:  {:src-coll s :target-coll s :id id :existing e :entry e …}
-   Bundle out: same, plus {:kept-embedding v} when kept."
+  "Before build-target-record, reuse the update snapshot's vector when the
+   embedding input and collection are unchanged. Legacy bundles without a
+   snapshot read it through read-stored-embedding. Always r/ok."
   [bundle]
   (r/ok (keep-vector read-stored-embedding bundle)))
 
