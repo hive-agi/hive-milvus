@@ -22,7 +22,8 @@
             [hive-milvus.failure :as failure]
             [hive-milvus.embedder :as embedder]
             [hive-milvus.store.guard :as guard]
-            [hive-milvus.resilience.budget :as budget]))
+            [hive-milvus.resilience.budget :as budget]
+            [hive-milvus.store.write :as write]))
 
 (defn- apply-order-by
   [entries order-by]
@@ -43,18 +44,9 @@
          distinct
          vec)))
 
-(defn add-entry!
-  "Write one entry. A record that does not fit the collection schema is
-   refused before it is embedded or sent (`guard/refusal`, permanent); the
-   write itself runs inside the write time budget (`budget`)."
-  [config-atom entry]
-  (or (guard/refusal (schema/entry->record-pure entry nil nil))
-      (resilient-within config-atom budget/reconnect-wait-ms
-        (let [coll-name (routing/ensure-routed! (:type entry))
-              record    (schema/entry->record entry coll-name)]
-          (d/deref! :add (milvus/add coll-name [record] :upsert? true)
-                    budget/write-call-timeout-ms)
-          (:id record)))))
+(def add-entry!
+  "Write an entry under the write time budget; refuse oversize before embedding."
+  write/add-entry!)
 
 (def default-batch-records
   "Records per milvus upsert in `add-entries!` unless the store config
