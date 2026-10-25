@@ -466,6 +466,15 @@
                             (when error {:collection collection :message error})))
                  outcomes)})
 
+(defn read-outcome
+  "Successful reads retain their vector API. An incomplete read is an error
+   Result with partial rows as diagnostic data, never a match vector."
+  [rows failed]
+  (if (seq failed)
+    (r/err :milvus/read-incomplete
+           {:failed (vec failed) :partial (vec rows)})
+    (vec rows)))
+
 (m/=> fan-out [:=> [:cat [:sequential FanOutOutcome]] FanOut])
 
 (defn collection-outcome
@@ -486,32 +495,23 @@
                 "(returning [] for this coll)")
       {:collection coll-name :rows [] :error (or (ex-message e) (str (class e)))})))
 
+(defn scan-deadline-ms
+  "Deref bound for a scalar read of `rows` rows projecting `fields`: the base
+   deadline plus an allowance per row, dearer when `content` is among them."
+  [rows fields]
+  (budget/read-deadline-ms (d/timeout-ms) rows
+                           (if (some #{"content"} fields)
+                             budget/scalar-row-cost-ms
+                             budget/projected-row-cost-ms)))
+
 (defn query-entries
-  "Fan out a scalar-filter query across every known collection.
-
-   Per-collection failures (transient transport drops, missing index,
-   schema drift on legacy collections) are isolated: the offending coll
-   contributes [] and the others return their hits. The failure is
-   logged at WARN so callers don't read a silent empty result as
-   `:limit not respected` (the silent-swallow used to surface as the
-   user-visible bug 20260503012357-7d008e50).
-
-   A log line is not something a caller can branch on, so when any coll
-   failed the returned vector also carries
-
-     ^{:hive-milvus/failed-collections [{:collection name :message str} ...]}
-
-   Absent metadata means every collection answered, so an empty result is a
-   fact about the DATA. Present metadata means the emptiness is partly an
-   artifact of the failure, and a caller must not report it as 'nothing
-   stored'.
-
-   Effectful boundary only — the isolation policy itself is `fan-out`."
+  "Scalar fan-out. The deadline of each page scales with the rows it asks for.
+   A collection that cannot answer (timeout included) makes the whole result an
+   error Result (`read-outcome`), never a match vector."
   [config-atom opts]
   (resilient config-atom
     (let [colls (lookup/known-collections config-atom)
-          {:keys [limit output-fields order-by]
-           :or {limit 100}} opts
+          {:keys [limit output-fields order-by] :or {limit 100}} opts
           fields (or output-fields schema/default-read-fields)
           filter-expr (or (schema/build-filter-expr opts) "id != \"\"")
           outcomes (mapv
@@ -522,16 +522,12 @@
                            @indexed
                            (d/deref! :query-scalar (milvus/query-scalar coll-name
                               {:filter filt :limit page-limit
-                               :output-fields fields
-                               :consistency-level :bounded})))
+                               :output-fields fields :consistency-level :bounded})
+                                     (scan-deadline-ms page-limit fields)))
                          coll-name filter-expr limit)))
                     colls)
           {:keys [rows failed]} (fan-out outcomes)]
-      (cond-> (-> (mapv schema/record->entry rows)
-                  (apply-order-by order-by)
-                  (cond->> (> (count rows) limit) (take limit))
-                  vec)
-        (seq failed) (with-meta {:hive-milvus/failed-collections failed})))))
+      (read-outcome (vec (take limit (apply-order-by (mapv schema/record->entry rows) order-by))) failed))))
 
 (defn search-context
   "The live collaborators a semantic search runs against."
@@ -542,33 +538,19 @@
      :searcher (search-boundary/milvus-vector-search)}))
 
 (defn search-with
-  "Run a semantic search for `query-text` against the collaborators in `ctx`
-   (see `search-pipeline/context`). Returns the entries, best first.
-
-   A target that fails is logged AND carried on the returned vector as
-
-     ^{:hive-milvus/failed-collections [{:collection name :message str} ...]}
-
-   - the key and shape `query-entries` uses. Absent metadata means every
-   target answered, so an empty result is a fact about the data; present
-   metadata means the result is partial and must not be reported as
-   'nothing matches'."
+  "Search entries, best first. Any failed target returns an error Result
+   with diagnostic partial rows, never absence disguised as metadata."
   [ctx query-text opts]
-  (let [{:keys [results failed searched]}
-        (search-pipeline/search ctx (assoc opts :text query-text))]
-    (if (seq failed)
-      (do (log/warn "search: target(s) failed" {:failed failed :searched searched})
-          (with-meta (vec results)
-            {:hive-milvus/failed-collections
-             (mapv (fn [{:keys [collection error] :as f}]
-                     {:collection collection
-                      :message    (str (or (:message f) error))})
-                   failed)}))
-      (vec results))))
+  (let [{:keys [results failed]} (search-pipeline/search ctx (assoc opts :text query-text))]
+    (read-outcome results
+                  (mapv (fn [{:keys [collection error] :as f}]
+                          {:collection collection :message (str (or (:message f) error))})
+                        failed))))
 
 (defn search-similar
-  "Semantic search. Returns entries, best first; a failed target is carried
-   as `:hive-milvus/failed-collections` metadata (see `search-with`)."
+  "Semantic search. Returns entries, best first. A target that failed (a
+   timeout included) makes the result an error Result (see `search-with`),
+   never an empty match vector. `:output-fields` narrows the columns read."
   [config-atom query-text opts]
   (resilient config-atom
     (search-with (search-context config-atom) query-text opts)))

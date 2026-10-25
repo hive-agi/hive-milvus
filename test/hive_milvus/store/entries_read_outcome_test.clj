@@ -188,24 +188,21 @@
 
 (defn- ctx [rows]
   (pipeline/context
-   {:resolver (tgt/fixed-resolver [(tgt/->target "old_1024d" :old)
-                                   (tgt/->target "new-2560d" :new)])
+   {:resolver (tgt/fixed-resolver [(tgt/->target "old_1024d" :old) (tgt/->target "new-2560d" :new)])
     :embedder (b/stub-embedder {:old [0.1] :new [0.2]})
     :searcher (b/stub-vector-search rows)}))
 
-(deftest a-failing-search-target-is-carried-as-metadata-test
+(deftest a-failing-search-target-is-an-error-test
   (let [res (entries/search-with (ctx {"new-2560d" [(row "a" 0.1)]}) "q" {:limit 5})]
-    (is (= ["a"] (mapv :id res)) "the healthy space still answers")
-    (is (= ["old_1024d"]
-           (mapv :collection (:hive-milvus/failed-collections (meta res)))))
-    (is (every? string? (map :message (:hive-milvus/failed-collections (meta res))))
-        "same {:collection :message} shape as query-entries")))
+    (is (r/err? res))
+    (is (= ["a"] (mapv :id (:partial res))))
+    (is (= ["old_1024d"] (mapv :collection (:failed res))))))
 
-(deftest every-search-target-down-is-not-an-honest-empty-test
-  (let [res (entries/search-with (ctx {}) "q" {:limit 5})]
-    (is (empty? res))
-    (is (= 2 (count (:hive-milvus/failed-collections (meta res))))
-        "the emptiness is marked as an artifact of the failure")))
+(deftest every-search-target-down-is-an-error-test
+  (let [res (entries/search-with (ctx {}) "q" {:limit 1000})]
+    (is (r/err? res))
+    (is (= 2 (count (:failed res))))
+    (is (= [] (:partial res)))))
 
 (deftest a-clean-search-carries-no-failure-metadata-test
   (let [res (entries/search-with (ctx {"new-2560d" [(row "a" 0.1)]

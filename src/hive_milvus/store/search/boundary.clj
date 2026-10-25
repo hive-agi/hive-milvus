@@ -11,16 +11,19 @@
             [hive-milvus.collection.naming :as naming]
             [hive-milvus.store.schema :as schema]
             [milvus-clj.api :as milvus]
-            [milvus-clj.index :as milvus-index]))
+            [milvus-clj.index :as milvus-index]
+            [hive-milvus.resilience.budget :as budget]))
 
 (defprotocol IQueryEmbedder
   (-embed [this target text]
     "r/ok query-vector in `target`'s space | r/err :search/embed-failed."))
 
 (defprotocol IVectorSearch
-  (-search [this target query-vec filter-expr limit]
+  (-search [this target query-vec filter-expr limit] [this target query-vec filter-expr limit opts]
     "r/ok rows (nearest first, at most `limit`) | r/err :search/milvus-query-failed.
-     Rows carry `schema/default-read-fields` — never the embedding."))
+     Rows carry `schema/default-read-fields` — never the embedding — unless `opts`
+     names `:output-fields` (Milvus column names). The call's deadline scales with
+     `limit` (`budget/read-deadline-ms`), so a large top-k is given the time it needs."))
 
 (def memory-metric
   "The metric the memory collections are indexed with. Read from the index that
@@ -66,9 +69,16 @@
                   :actual     actual})
           (r/ok query-vec))))))
 
+(defn- search-deadline-ms
+  "Deref bound for a search asking `limit` rows: the base deadline, scaled."
+  [limit]
+  (budget/read-deadline-ms (d/timeout-ms) limit budget/search-row-cost-ms))
+
 (defrecord MilvusVectorSearch []
   IVectorSearch
-  (-search [_ target query-vec filter-expr limit]
+  (-search [this target query-vec filter-expr limit]
+    (-search this target query-vec filter-expr limit nil))
+  (-search [_ target query-vec filter-expr limit opts]
     (r/try-effect* :search/milvus-query-failed
       (rows->distances
        memory-metric
@@ -76,8 +86,10 @@
                       (cond-> {:vector        query-vec
                                :limit         limit
                                :metric-type   memory-metric
-                               :output-fields schema/default-read-fields}
-                        filter-expr (assoc :filter filter-expr))))))))
+                               :output-fields (or (seq (:output-fields opts))
+                                                  schema/default-read-fields)}
+                        filter-expr (assoc :filter filter-expr)))
+                 (search-deadline-ms limit))))))
 
 (defrecord StubEmbedder [vec-by-space]
   IQueryEmbedder
@@ -88,7 +100,9 @@
 
 (defrecord StubVectorSearch [rows-by-collection]
   IVectorSearch
-  (-search [_ target _ _ limit]
+  (-search [this target query-vec filter-expr limit]
+    (-search this target query-vec filter-expr limit nil))
+  (-search [_ target _ _ limit _opts]
     (if-let [rows (get rows-by-collection (:collection target))]
       (r/ok (vec (take limit rows)))
       (r/err :search/milvus-query-failed {:collection (:collection target)}))))
