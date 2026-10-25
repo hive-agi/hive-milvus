@@ -18,6 +18,17 @@
     (when (seq results)
       (schema/record->entry (first results)))))
 
+(defn get-entry-with-vector
+  "Read an update snapshot in one RPC. The stored vector stays outside the
+   domain entry, so it cannot leak into update results or metadata."
+  [collection-name id]
+  (when-let [row (first (d/deref! :get
+                         (milvus/get collection-name [id]
+                           :include (conj schema/default-read-fields "embedding")
+                           :consistency-level :strong)))]
+    {:entry (schema/record->entry row)
+     :stored-embedding (:embedding row)}))
+
 (defn update-entry-fields!
   "Update an entry by reading, merging, and upserting."
   [collection-name id updates]

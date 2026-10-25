@@ -9,11 +9,12 @@
    Both are `defonce` so hot-reload doesn't desync with milvus-clj's own
    singleton client state."
   (:require [hive-milvus.store.deref :as d]
-            [hive-dsl.result :as dsl-r]
             [milvus-clj.api :as milvus]
             [milvus-clj.schema :as milvus-schema]
             [milvus-clj.index :as milvus-index]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-milvus.store.rest-index :as rest-index]
+            [milvus-clj.config :as milvus-config]))
 
 (defonce loaded-collections
   ;; Per-process memo of collections we've already `load-collection`'d.
@@ -23,15 +24,16 @@
   ;; a fresh server or collection was dropped.
   (atom #{}))
 
+(declare indexed-collections)
+
 (defn invalidate-loaded-collection!
   [collection-name]
-  (swap! loaded-collections disj collection-name))
+  (swap! loaded-collections disj collection-name)
+  (swap! indexed-collections disj collection-name))
 
 (def scalar-indexed-fields
-  "Fields that back hot catchup filters. Without INVERTED scalar indexes on
-   these, Milvus cold-path queries fall back to full collection scans (~50s
-   per query on a few-thousand-row collection). Order matters for logging
-   only — each index is created independently and idempotently."
+  "Equality/IN fields used by catchup. Tags are serialized VarChar with
+   infix LIKE filters; these indexes do not accelerate that predicate."
   ["type" "project_id"])
 
 (defonce ^{:doc "Memoization guard so we only probe/install scalar indexes once per
@@ -41,27 +43,38 @@
   indexed-collections
   (atom #{}))
 
-(defn ensure-scalar-indexes!
-  "Idempotently create INVERTED scalar indexes on filter fields used by
-   catchup (type, project_id). Milvus `createIndex` on an already-indexed
-   field returns a non-OK code; we catch and keep going — the failure mode
-   for 'already exists' is indistinguishable from other errors via the
-   current milvus-clj surface, so we log at debug + carry on.
+(defn ensure-indexed!
+  "Serialize installation per memo. A false result means build pending.
+   Partial passes, pending builds and failures are never memoized."
+  [memo collection-name install!]
+  (locking memo
+    (when-not (contains? @memo collection-name)
+      (try
+        (if (false? (install!))
+          false
+          (do (swap! memo conj collection-name)
+              (log/info "Scalar indexes ensured for" collection-name)
+              true))
+        (catch Exception e
+          (log/warn e "Scalar indexes not ensured; will retry" collection-name)
+          false)))))
 
-   Metric-type is a required param on CreateIndexParam even for scalar
-   indexes; Milvus server ignores it when the index type is INVERTED."
+(defn ensure-scalar-indexes!
+  "Ensure type/project_id indexes. HTTP probes actual field definitions.
+   HTTP memo is populated only after both builds report Finished."
   [collection-name]
-  (when-not (contains? @indexed-collections collection-name)
-    (doseq [field scalar-indexed-fields]
-      (let [result (dsl-r/rescue ::index-failed
-                     (d/deref! :create-index (milvus/create-index collection-name
-                                           {:field-name  field
-                                            :index-type  io.milvus.param.IndexType/INVERTED
-                                            :metric-type :l2})))]
-        (if (= result ::index-failed)
-          (log/debug "ensure-scalar-indexes! skipping" field "(likely already indexed)")
-          (log/info "Ensured INVERTED scalar index on" field "for" collection-name))))
-    (swap! indexed-collections conj collection-name)))
+  (ensure-indexed! indexed-collections collection-name
+    (fn []
+      (let [config (milvus-config/get-config)]
+        (if (= :http (:transport config))
+          (rest-index/ensure-fields! (partial rest-index/post! config)
+                                     collection-name scalar-indexed-fields)
+          (doseq [field scalar-indexed-fields]
+            (d/deref! :create-index
+                      (milvus/create-index collection-name
+                        {:field-name field
+                         :index-type io.milvus.param.IndexType/INVERTED
+                         :metric-type :l2}))))))))
 
 (defn ensure-collection!
   "Ensure the memory collection exists and is loaded into memory.

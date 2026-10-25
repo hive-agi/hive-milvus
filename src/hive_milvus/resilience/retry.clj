@@ -197,6 +197,16 @@
      (hive-milvus.resilience.retry/with-auto-reconnect
        ~config-atom (fn [] ~@body))))
 
+(defmacro resilient-within
+  "`resilient` with an explicit reconnect wait of `budget-ms` instead of the
+   8 s default. Writes use it with `budget/reconnect-wait-ms` so call + wait
+   + retried call fits hive-mcp's :index stage budget."
+  [config-atom budget-ms & body]
+  `(do
+     (hive-milvus.resilience.retry/ensure-live! ~config-atom)
+     (hive-milvus.resilience.retry/with-auto-reconnect
+       ~config-atom (fn [] ~@body) ~budget-ms)))
+
 (def ConfigAtom
   "Milvus client config atom, passed through to the reconnect Boundary."
   [:fn #(instance? clojure.lang.IAtom %)])
