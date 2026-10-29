@@ -37,14 +37,25 @@
 (defn scan-ids
   "Every entry id across the collections this store reads, each once; expired
    ones only with :include-expired?. :timeout-ms bounds each Milvus call of the
-   walk (default: scaled to the page). Raises rather than truncating."
-  [config-atom {:keys [include-expired? timeout-ms]}]
-  (let [base (schema/build-filter-expr {:include-expired? include-expired?})
-        opts (cond-> {} timeout-ms (assoc :timeout-ms timeout-ms))]
-    (->> (lookup/known-collections config-atom)
-         (mapcat #(enumerate/all-ids % base opts))
-         distinct
-         vec)))
+   walk (default: scaled to the page). :consistency is :strict (default) or
+   :snapshot-of-stable-rows, the walk check of
+   `hive-milvus.relocate.enumerate/collect-ids`: the latter guarantees every
+   row present for the whole walk and refuses a shortfall that churn does not
+   explain. Raises rather than truncating. The result's metadata is
+   {:consistency :complete? :walks}, where :walks holds one report per
+   collection (counts before/after, and the tolerance in the stable mode),
+   and :complete? is true only when every walk was strict."
+  [config-atom {:keys [include-expired? timeout-ms consistency]}]
+  (let [base  (schema/build-filter-expr {:include-expired? include-expired?})
+        opts  (cond-> {}
+                timeout-ms  (assoc :timeout-ms timeout-ms)
+                consistency (assoc :consistency consistency))
+        walks (mapv #(enumerate/all-ids % base opts) (lookup/known-collections config-atom))
+        reps  (mapv meta walks)]
+    (with-meta (into [] (comp cat (distinct)) walks)
+      {:consistency (or consistency :strict)
+       :complete?   (if (every? #(true? (:complete? %)) reps) true :stable-rows)
+       :walks       reps})))
 
 (def add-entry!
   "Write an entry under the write time budget; refuse oversize before embedding."

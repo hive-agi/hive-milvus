@@ -153,42 +153,177 @@
   (max enumerate-timeout-ms
        (budget/read-deadline-ms (d/timeout-ms) rows budget/projected-row-cost-ms)))
 
-(defn collect-ids
-  "Every id matching `base` read through FETCH (`(fn [filter-expr limit]
-   rows)`), checked against COUNT-FN (`(fn [filter-expr] n)`, the server's
-   count(*)) taken before and after the walk. With an unchanged count the walk
-   must have read exactly that many rows; a count that moved meanwhile (live
-   writes) must bracket it. Anything else raises :enumerate/count-mismatch.
-   Returns the distinct ids in walk order. `:page` as in `rows-matching`."
-  [fetch count-fn base {:keys [page]}]
-  (let [filt   (if (str/blank? base) "id != \"\"" base)
-        before (count-fn filt)
-        ids    (mapv :id (rows-in-range fetch base (page-size page) nil nil 0))
+(def consistency-modes
+  "What `collect-ids` holds a walk to.
+
+   :strict (default): the walk must account for the server's count(*). With
+   an unchanged count it read exactly that many rows; with a count that moved
+   during the walk (live writes) the rows read lie between the two counts.
+
+   :snapshot-of-stable-rows: the guarantee asked for is that every row present
+   for the WHOLE walk is returned. Rows inserted or deleted during the walk may
+   or may not appear. See `collect-ids` for the acceptance rule."
+  #{:strict :snapshot-of-stable-rows})
+
+(def stable-tolerance-floor
+  "Under :snapshot-of-stable-rows, the part of the shortfall tolerance that does
+   not depend on churn: this fraction of min(count-before, count-after). It
+   covers churn that the counts cannot see, such as an insert behind the
+   cursor offset by a delete ahead of it."
+  1/1000)
+
+(def stable-tolerance-cap
+  "Under :snapshot-of-stable-rows, the tolerance never exceeds this fraction of
+   min(count-before, count-after), however much churn was observed. A walk
+   short by more than that is refused."
+  1/100)
+
+(defn stable-tolerance
+  "Rows the walk may fall short of min(`before`, `after`) under
+   :snapshot-of-stable-rows: the churn the three counts show, |mid - before| +
+   |after - mid|, plus ceil(`stable-tolerance-floor` x min). The whole is
+   capped at ceil(`stable-tolerance-cap` x min)."
+  [before mid after]
+  (let [base  (min before after)
+        churn (+ (abs (- mid before)) (abs (- after mid)))
+        floor (long (Math/ceil (* base stable-tolerance-floor)))
+        cap   (long (Math/ceil (* base stable-tolerance-cap)))]
+    (min cap (+ churn floor))))
+
+(defn- walk-ascending!
+  "The ids of `rows`, realized in walk order. Raises
+   :enumerate/duplicate-id or :enumerate/not-ascending unless each id is
+   strictly greater than the one before it. Calls `on-mid` once, as the walk
+   reaches row `mid-at`."
+  [rows mid-at on-mid base]
+  (loop [xs (seq rows) prev nil i 0 acc (transient [])]
+    (when (= i mid-at) (on-mid))
+    (if xs
+      (let [id (:id (first xs))
+            c  (when prev (compare id prev))]
+        (when (and c (not (pos? c)))
+          (throw (ex-info (str "Cannot enumerate: id " (pr-str id) " at row " i
+                               (if (zero? c) " repeats the one before it"
+                                   " is below the one before it"))
+                          {:error  (if (zero? c) :enumerate/duplicate-id :enumerate/not-ascending)
+                           :at     i
+                           :id     id
+                           :prev   prev
+                           :filter base})))
+        (recur (next xs) id (inc i) (conj! acc id)))
+      (persistent! acc))))
+
+(defn- collect-stable
+  "`collect-ids` under :snapshot-of-stable-rows."
+  [fetch count-fn base filt page]
+  (let [before (count-fn filt)
+        mid    (volatile! nil)
+        ids    (walk-ascending! (rows-in-range fetch base page nil nil 0)
+                                (when (pos? before) (quot before 2))
+                                #(vreset! mid (count-fn filt))
+                                base)
+        mid    (or @mid (count-fn filt))
         after  (count-fn filt)
-        n      (count ids)]
-    (when-not (<= (min before after) n (max before after))
-      (throw (ex-info (str "Cannot enumerate: the walk read " n " rows but count(*) said "
-                           before " before and " after " after")
-                      {:error        :enumerate/count-mismatch
-                       :read         n
-                       :count-before before
-                       :count-after  after
-                       :filter       base})))
-    (vec (distinct ids))))
+        n      (count ids)
+        tol    (stable-tolerance before mid after)
+        short  (max 0 (- (min before after) n))
+        report {:consistency  :snapshot-of-stable-rows
+                :complete?    :stable-rows
+                :read         n
+                :count-before before
+                :count-mid    mid
+                :count-after  after
+                :tolerance    tol
+                :shortfall    short}]
+    (when (> short tol)
+      (throw (ex-info (str "Cannot enumerate: the walk read " n " rows, " short
+                           " short of min(count(*)) (" before " before, " mid " mid-walk, "
+                           after " after); churn explains at most " tol)
+                      (assoc report
+                             :error     :enumerate/stable-rows-shortfall
+                             :complete? false
+                             :filter    base))))
+    (with-meta ids report)))
+
+(defn collect-ids
+  "Every id matching `base`, read through FETCH (`(fn [filter-expr limit]
+   rows)`) and checked against COUNT-FN (`(fn [filter-expr] n)`, the server's
+   count(*)). Returns a vector of distinct ids, in walk order. Its metadata is
+   the walk's report: :consistency, :complete?, :read, :count-before and
+   :count-after, plus :count-mid, :tolerance and :shortfall in the stable
+   mode. Options: `:page` as in `rows-matching`, and `:consistency` (one of
+   `consistency-modes`, default :strict).
+
+   :strict takes a count before and after the walk. If the count did not
+   change, the walk must have read exactly that many rows. If it moved
+   (live writes), the rows read must lie between the two counts. Anything
+   else raises :enumerate/count-mismatch. :complete? is true.
+
+   :snapshot-of-stable-rows takes counts before, mid-walk (at row
+   before/2) and after the walk. It accepts the walk only when BOTH hold:
+     1. Every id is strictly greater than the one before it. Otherwise it
+        raises :enumerate/duplicate-id or :enumerate/not-ascending. This is
+        the keyset proof. Each page is the lowest ids above the cursor, so a
+        row present for the whole walk lies above some cursor and below the
+        next page's last id, and is returned. Primary keys are immutable, so
+        no row moves behind the cursor. A server that answers in another
+        order (the median-split fallback) gives no such proof and is
+        refused.
+     2. read >= min(before, after) - tolerance, where tolerance is
+        `stable-tolerance`: the churn the three counts show, plus 0.1% of
+        min(before, after), capped at 1% of it. Otherwise it raises
+        :enumerate/stable-rows-shortfall.
+   Rule 2 is a gap detector, not a proof. Counts show only net churn, so an
+   insert behind the cursor and a delete ahead of it cancel out. That is why
+   the tolerance has a floor. A page that drops more stable rows than the
+   tolerance is refused, and a smaller drop cannot be told apart from churn.
+   The report carries every count, the tolerance and the shortfall, and
+   :complete? is :stable-rows (never true), so the caller sees what was
+   accepted."
+  [fetch count-fn base {:keys [page consistency] :or {consistency :strict}}]
+  (when-not (consistency-modes consistency)
+    (throw (ex-info (str "Unknown enumeration consistency " (pr-str consistency))
+                    {:error :enumerate/unknown-consistency
+                     :consistency consistency
+                     :known consistency-modes})))
+  (let [filt (if (str/blank? base) "id != \"\"" base)]
+    (if (= consistency :snapshot-of-stable-rows)
+      (collect-stable fetch count-fn base filt (page-size page))
+      (let [before (count-fn filt)
+            ids    (mapv :id (rows-in-range fetch base (page-size page) nil nil 0))
+            after  (count-fn filt)
+            n      (count ids)]
+        (when-not (<= (min before after) n (max before after))
+          (throw (ex-info (str "Cannot enumerate: the walk read " n " rows but count(*) said "
+                               before " before and " after " after")
+                          {:error        :enumerate/count-mismatch
+                           :read         n
+                           :count-before before
+                           :count-after  after
+                           :filter       base})))
+        (with-meta (vec (distinct ids))
+          {:consistency  :strict
+           :complete?    true
+           :read         n
+           :count-before before
+           :count-after  after})))))
 
 (defn all-ids-with
   "`collect-ids` over QUERY (`(fn [filter-expr limit] future-of-rows)`) and
    COUNT (`(fn [filter-expr timeout-ms] n)`). Each page is dereferenced within
    `:timeout-ms` when given, else `page-deadline-ms` of its size; a count
-   within `:timeout-ms`, else `budget/read-deadline-cap-ms`. A failure carries
-   `:coll`."
-  [query count-q coll base {:keys [timeout-ms page]}]
+   within `:timeout-ms`, else `budget/read-deadline-cap-ms`. `:consistency`
+   and `:page` go to `collect-ids`. A failure carries `:coll`, and so does
+   the report in the result's metadata."
+  [query count-q coll base {:keys [timeout-ms page consistency]}]
   (let [fetch (fn [filt limit]
                 (d/deref! :query-scalar (query filt limit)
                           (or timeout-ms (page-deadline-ms limit))))
         cnt   (fn [filt] (count-q filt (or timeout-ms budget/read-deadline-cap-ms)))]
     (try
-      (collect-ids fetch cnt base {:page page})
+      (let [ids (collect-ids fetch cnt base (cond-> {:page page}
+                                              consistency (assoc :consistency consistency)))]
+        (vary-meta ids assoc :coll coll))
       (catch clojure.lang.ExceptionInfo e
         (throw (ex-info (ex-message e) (assoc (ex-data e) :coll coll) e))))))
 
@@ -210,7 +345,9 @@
 (defn all-ids
   "Every id in `coll` matching the optional `base` filter expression, as a
    vector, checked against count(*). Options: `:timeout-ms` bounds each Milvus
-   call (default: scaled to the page), `:page` the page size. Raises rather
+   call (default: scaled to the page), `:page` is the page size, and
+   `:consistency` is :strict (default) or :snapshot-of-stable-rows (see
+   `collect-ids`). The walk's report is the result's metadata. Raises rather
    than truncating."
   ([coll] (all-ids coll nil))
   ([coll base] (all-ids coll base {}))
