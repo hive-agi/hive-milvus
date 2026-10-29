@@ -81,9 +81,11 @@
     (->SnapshotIdSource (atom ids) (count ids))))
 
 (defn milvus-snapshot-source
-  "Enumerates `coll` up front, then hands out each id once."
-  [coll]
-  (snapshot-source (enumerate/all-ids coll)))
+  "Enumerates `coll` up front, then hands out each id once. `opts` go to
+   `enumerate/all-ids` (`:timeout-ms` per Milvus call, `:page`)."
+  ([coll] (milvus-snapshot-source coll {}))
+  ([coll opts]
+   (snapshot-source (enumerate/all-ids coll nil opts))))
 
 (defn no-op-source
   "Always drained. The default when no source is supplied."

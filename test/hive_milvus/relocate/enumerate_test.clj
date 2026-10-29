@@ -52,6 +52,20 @@
       (is (<= @calls (inc (quot n enumerate/max-page)))
           "one fetch per page: nothing is read twice"))))
 
+(deftest the-default-collection-size-is-enumerated-whole-test
+  (testing "past the 722,882 rows of hive_mcp_memory_2560d, through all-ids-with and its count check"
+    (let [n      800000
+          ids    (mapv row-id (range n))
+          calls  (atom 0)
+          fetch  (lowest-k-fetch ids calls)
+          got    (enumerate/all-ids-with (fn [filt limit] (delay (fetch filt limit)))
+                                         (fn [_filt _ms] n)
+                                         "coll_big" nil {})]
+      (is (= n (count got)) "every id")
+      (is (= ids got) "each once, ascending")
+      (is (<= @calls (inc (quot n enumerate/max-page)))
+          "one fetch per page: nothing is read twice"))))
+
 (deftest a-small-page-walks-a-thousand-ids-test
   (let [ids   (mapv row-id (range 1000))
         calls (atom 0)
@@ -127,4 +141,20 @@
                               "coll_x" nil {:timeout-ms 777})
       (is (= 777 @seen))))
   (testing "the default bound scales with the page"
-    (is (< (d/timeout-ms) (enumerate/page-deadline-ms enumerate/max-page)))))
+    (is (< (d/timeout-ms) (enumerate/page-deadline-ms enumerate/max-page))))
+  (testing "with no :timeout-ms, an enumeration page and its count wait at least 30 s"
+    (let [seen (atom [])]
+      (enumerate/all-ids-with (fn [_ _] (delay [])) (fn [_ ms] (swap! seen conj ms) 0)
+                              "coll_x" nil {})
+      (is (seq @seen))
+      (is (every? #(>= % 30000) @seen)))
+    (is (>= (enumerate/page-deadline-ms enumerate/max-page) 30000)
+        "a 16384-row id page measured ~2 s idle; under load it needs far more than 5 s")))
+
+(deftest a-snapshot-source-passes-the-callers-options-test
+  (testing "milvus-snapshot-source hands its options through to all-ids"
+    (let [seen (atom nil)]
+      (with-redefs [enumerate/all-ids (fn [coll base opts] (reset! seen [coll base opts]) ["a"])]
+        ((requiring-resolve 'hive-milvus.relocate.source/milvus-snapshot-source)
+         "coll_y" {:timeout-ms 45000}))
+      (is (= ["coll_y" nil {:timeout-ms 45000}] @seen)))))
