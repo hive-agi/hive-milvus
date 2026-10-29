@@ -138,11 +138,20 @@
        (vec (fetch filter-expr limit))
        (into [] (take limit) (rows-in-range fetch filter-expr page nil nil 0))))))
 
+(def enumerate-timeout-ms
+  "Floor of the default deref bound for one enumeration call. A full id page
+   measured ~2 s on an idle hive_mcp_memory_2560d; a walk of ~45 such pages
+   runs while the store serves traffic, so the floor is the read cap, not the
+   5 s interactive default."
+  budget/read-deadline-cap-ms)
+
 (defn page-deadline-ms
   "Default deref bound for an id-only page of `rows` rows: the base deadline
-   plus a per-row allowance (a 16384-row strong read measured ~2 s)."
+   plus a per-row allowance (a 16384-row strong read measured ~2 s), never
+   below `enumerate-timeout-ms`."
   [rows]
-  (budget/read-deadline-ms (d/timeout-ms) rows budget/projected-row-cost-ms))
+  (max enumerate-timeout-ms
+       (budget/read-deadline-ms (d/timeout-ms) rows budget/projected-row-cost-ms)))
 
 (defn collect-ids
   "Every id matching `base` read through FETCH (`(fn [filter-expr limit]
