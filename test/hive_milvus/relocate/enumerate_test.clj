@@ -126,6 +126,126 @@
         (is (= ids (enumerate/collect-ids (lowest-k-fetch ids (atom 0)) count-fn
                                           nil {:page 4})))))))
 
+(defn- churning-store
+  "A live store over the sorted set of `ids`: FETCH answers lowest-k ascending
+   (as `lowest-k-fetch`), and after the k-th page `(churn! k set)` mutates the
+   set, so inserts and deletes land between pages. COUNT answers its current
+   size. `stable` is filled by the caller: ids never deleted that were there
+   at the start."
+  [ids churn!]
+  (let [s     (atom (apply sorted-set ids))
+        pages (atom 0)
+        fetch (fn [filter-expr limit]
+                (let [ge (bound #"id >= \"([^\"]*)\"" filter-expr)
+                      gt (bound #"id > \"([^\"]*)\"" filter-expr)
+                      lt (bound #"id < \"([^\"]*)\"" filter-expr)
+                      cur @s
+                      xs (cond ge (subseq cur >= ge) gt (subseq cur > gt) :else (seq cur))
+                      out (into [] (comp (take-while #(or (nil? lt) (neg? (compare % lt))))
+                                         (take limit)
+                                         (map (fn [id] {:id id})))
+                                xs)]
+                  (swap! s #(churn! (swap! pages inc) %))
+                  out))]
+    {:fetch fetch :count-fn (fn [_] (count @s)) :set s}))
+
+(defn- interleaved-churn
+  "Between pages k and k+1: insert 2 fresh ids just above the lowest id
+   (behind the cursor from page 1 on, so never read) and delete 1 id far
+   ahead of the cursor, never one of `stable`. The count rises by 1 per page
+   while the walk reads 1 row fewer per page: the shape of the live refusal,
+   read < min(count-before, count-after)."
+  [stable]
+  (fn [k s]
+    (let [fresh  [(format "00000000x%04d0" k) (format "00000000x%04d1" k)]
+          doomed (->> (rsubseq s > "00000000") (remove stable) (drop k) (take 1))]
+      (as-> s s (apply conj s fresh) (apply disj s doomed)))))
+
+(deftest stable-rows-survive-interleaved-inserts-and-deletes-test
+  (let [n      20000
+        ids    (mapv row-id (range n))
+        stable (set (take-nth 2 ids))
+        mk     #(churning-store ids (interleaved-churn stable))]
+    (testing "the stable mode returns every row present for the whole walk, and accepts"
+      (let [{:keys [fetch count-fn set]} (mk)
+            got (enumerate/collect-ids fetch count-fn nil
+                                       {:page 512 :consistency :snapshot-of-stable-rows})
+            rep (meta got)]
+        (is (every? (clojure.core/set got) stable) "every stable row")
+        (is (= got (sort got)) "strictly ascending")
+        (is (= (count got) (count (distinct got))))
+        (is (< (count got) (min (:count-before rep) (:count-after rep)))
+            "the walk read fewer rows than either count: strict would refuse this")
+        (is (= :stable-rows (:complete? rep)) "never claims plain completeness")
+        (is (= n (:count-before rep)))
+        (is (= (count @set) (:count-after rep)))
+        (is (pos? (:shortfall rep)))
+        (is (<= (:shortfall rep) (:tolerance rep)))))
+    (testing "the strict mode still refuses the same walk"
+      (let [{:keys [fetch count-fn]} (mk)
+            e (try (enumerate/collect-ids fetch count-fn nil {:page 512}) nil
+                   (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :enumerate/count-mismatch (:error (ex-data e))))))
+    (testing "full pages that also skip stable rows under the same churn are refused"
+      (let [{:keys [fetch count-fn]} (mk)
+            gap    (clojure.core/set (filter stable (subvec ids 5000 5400)))
+            fetch' (fn [f limit] (into [] (comp (remove #(gap (:id %))) (take limit))
+                                       (fetch f (+ limit (count gap)))))
+            e (try (enumerate/collect-ids fetch' count-fn nil
+                                          {:page 512 :consistency :snapshot-of-stable-rows})
+                   nil
+                   (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :enumerate/stable-rows-shortfall (:error (ex-data e))))
+        (is (> (:shortfall (ex-data e)) (:tolerance (ex-data e))))))))
+
+(deftest a-page-that-skips-stable-rows-is-refused-in-the-stable-mode-test
+  (testing "full ascending pages that silently leave out 40 rows the count still holds"
+    (let [ids   (mapv row-id (range 400))
+          gap   (set (subvec ids 100 140))
+          base  (lowest-k-fetch ids (atom 0))
+          fetch (fn [f limit] (into [] (comp (remove #(gap (:id %))) (take limit))
+                                    (base f (+ limit (count gap)))))
+          e     (try (enumerate/collect-ids fetch (constantly 400) nil
+                                            {:page 16 :consistency :snapshot-of-stable-rows})
+                     nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :enumerate/stable-rows-shortfall (:error (ex-data e))))
+      (is (= 360 (:read (ex-data e))))
+      (is (= 40 (:shortfall (ex-data e))))
+      (is (= 1 (:tolerance (ex-data e))))
+      (is (false? (:complete? (ex-data e))))
+      (is (= 400 (:count-before (ex-data e)) (:count-after (ex-data e))))))
+  (testing "the tolerance: observed churn plus a 0.1% floor, capped at 1%"
+    (is (= 1 (enumerate/stable-tolerance 400 400 400)) "no churn: the floor")
+    (is (= 4 (enumerate/stable-tolerance 400 420 380)) "large churn: the 1% cap")
+    (is (= 5 (enumerate/stable-tolerance 1000 1002 1000)) "churn 2+2, floor 1"))
+  (testing "a walk that is not strictly ascending is refused"
+    (let [dup (fn [_ limit] (vec (take limit [{:id "a"} {:id "a"} {:id "b"}])))
+          e   (try (enumerate/collect-ids dup (constantly 3) nil
+                                          {:page 8 :consistency :snapshot-of-stable-rows})
+                   nil (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :enumerate/duplicate-id (:error (ex-data e))))))
+  (testing "an unknown consistency is refused"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (enumerate/collect-ids (lowest-k-fetch [] (atom 0)) (constantly 0) nil
+                                        {:consistency :whatever})))))
+
+(deftest the-stable-mode-reaches-all-ids-with-test
+  (let [ids (mapv row-id (range 50))
+        got (enumerate/all-ids-with (let [f (lowest-k-fetch ids (atom 0))]
+                                      (fn [filt limit] (delay (f filt limit))))
+                                    (fn [_ _] 50) "coll_s" nil
+                                    {:page 8 :consistency :snapshot-of-stable-rows})]
+    (is (= ids got))
+    (is (= {:consistency :snapshot-of-stable-rows :complete? :stable-rows :coll "coll_s"
+            :count-before 50 :count-after 50}
+           (select-keys (meta got) [:consistency :complete? :coll :count-before :count-after])))
+    (is (true? (:complete? (meta (enumerate/all-ids-with
+                                  (let [f (lowest-k-fetch ids (atom 0))]
+                                    (fn [filt limit] (delay (f filt limit))))
+                                  (fn [_ _] 50) "coll_s" nil {:page 8}))))
+        "strict stays complete")))
+
 (deftest the-page-deadline-is-the-callers-test
   (testing "a fetch that never answers raises :milvus/timeout with the caller's bound"
     (let [e (try (enumerate/all-ids-with (fn [_filt _limit] (promise)) (fn [_filt _ms] 0)
