@@ -36,11 +36,13 @@
 
 (defn scan-ids
   "Every entry id across the collections this store reads, each once; expired
-   ones only with :include-expired?. Raises rather than truncating."
-  [config-atom {:keys [include-expired?]}]
-  (let [base (schema/build-filter-expr {:include-expired? include-expired?})]
+   ones only with :include-expired?. :timeout-ms bounds each Milvus call of the
+   walk (default: scaled to the page). Raises rather than truncating."
+  [config-atom {:keys [include-expired? timeout-ms]}]
+  (let [base (schema/build-filter-expr {:include-expired? include-expired?})
+        opts (cond-> {} timeout-ms (assoc :timeout-ms timeout-ms))]
     (->> (lookup/known-collections config-atom)
-         (mapcat #(enumerate/all-ids % base))
+         (mapcat #(enumerate/all-ids % base opts))
          distinct
          vec)))
 
