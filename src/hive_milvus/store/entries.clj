@@ -36,13 +36,26 @@
 
 (defn scan-ids
   "Every entry id across the collections this store reads, each once; expired
-   ones only with :include-expired?. Raises rather than truncating."
-  [config-atom {:keys [include-expired?]}]
-  (let [base (schema/build-filter-expr {:include-expired? include-expired?})]
-    (->> (lookup/known-collections config-atom)
-         (mapcat #(enumerate/all-ids % base))
-         distinct
-         vec)))
+   ones only with :include-expired?. :timeout-ms bounds each Milvus call of the
+   walk (default: scaled to the page). :consistency is :strict (default) or
+   :snapshot-of-stable-rows, the walk check of
+   `hive-milvus.relocate.enumerate/collect-ids`: the latter guarantees every
+   row present for the whole walk and refuses a shortfall that churn does not
+   explain. Raises rather than truncating. The result's metadata is
+   {:consistency :complete? :walks}, where :walks holds one report per
+   collection (counts before/after, and the tolerance in the stable mode),
+   and :complete? is true only when every walk was strict."
+  [config-atom {:keys [include-expired? timeout-ms consistency]}]
+  (let [base  (schema/build-filter-expr {:include-expired? include-expired?})
+        opts  (cond-> {}
+                timeout-ms  (assoc :timeout-ms timeout-ms)
+                consistency (assoc :consistency consistency))
+        walks (mapv #(enumerate/all-ids % base opts) (lookup/known-collections config-atom))
+        reps  (mapv meta walks)]
+    (with-meta (into [] (comp cat (distinct)) walks)
+      {:consistency (or consistency :strict)
+       :complete?   (if (every? #(true? (:complete? %)) reps) true :stable-rows)
+       :walks       reps})))
 
 (def add-entry!
   "Write an entry under the write time budget; refuse oversize before embedding."
@@ -466,6 +479,15 @@
                             (when error {:collection collection :message error})))
                  outcomes)})
 
+(defn read-outcome
+  "Successful reads retain their vector API. An incomplete read is an error
+   Result with partial rows as diagnostic data, never a match vector."
+  [rows failed]
+  (if (seq failed)
+    (r/err :milvus/read-incomplete
+           {:failed (vec failed) :partial (vec rows)})
+    (vec rows)))
+
 (m/=> fan-out [:=> [:cat [:sequential FanOutOutcome]] FanOut])
 
 (defn collection-outcome
@@ -486,32 +508,23 @@
                 "(returning [] for this coll)")
       {:collection coll-name :rows [] :error (or (ex-message e) (str (class e)))})))
 
+(defn scan-deadline-ms
+  "Deref bound for a scalar read of `rows` rows projecting `fields`: the base
+   deadline plus an allowance per row, dearer when `content` is among them."
+  [rows fields]
+  (budget/read-deadline-ms (d/timeout-ms) rows
+                           (if (some #{"content"} fields)
+                             budget/scalar-row-cost-ms
+                             budget/projected-row-cost-ms)))
+
 (defn query-entries
-  "Fan out a scalar-filter query across every known collection.
-
-   Per-collection failures (transient transport drops, missing index,
-   schema drift on legacy collections) are isolated: the offending coll
-   contributes [] and the others return their hits. The failure is
-   logged at WARN so callers don't read a silent empty result as
-   `:limit not respected` (the silent-swallow used to surface as the
-   user-visible bug 20260503012357-7d008e50).
-
-   A log line is not something a caller can branch on, so when any coll
-   failed the returned vector also carries
-
-     ^{:hive-milvus/failed-collections [{:collection name :message str} ...]}
-
-   Absent metadata means every collection answered, so an empty result is a
-   fact about the DATA. Present metadata means the emptiness is partly an
-   artifact of the failure, and a caller must not report it as 'nothing
-   stored'.
-
-   Effectful boundary only — the isolation policy itself is `fan-out`."
+  "Scalar fan-out. The deadline of each page scales with the rows it asks for.
+   A collection that cannot answer (timeout included) makes the whole result an
+   error Result (`read-outcome`), never a match vector."
   [config-atom opts]
   (resilient config-atom
     (let [colls (lookup/known-collections config-atom)
-          {:keys [limit output-fields order-by]
-           :or {limit 100}} opts
+          {:keys [limit output-fields order-by] :or {limit 100}} opts
           fields (or output-fields schema/default-read-fields)
           filter-expr (or (schema/build-filter-expr opts) "id != \"\"")
           outcomes (mapv
@@ -522,16 +535,137 @@
                            @indexed
                            (d/deref! :query-scalar (milvus/query-scalar coll-name
                               {:filter filt :limit page-limit
-                               :output-fields fields
-                               :consistency-level :bounded})))
+                               :output-fields fields :consistency-level :bounded})
+                                     (scan-deadline-ms page-limit fields)))
                          coll-name filter-expr limit)))
                     colls)
           {:keys [rows failed]} (fan-out outcomes)]
-      (cond-> (-> (mapv schema/record->entry rows)
-                  (apply-order-by order-by)
-                  (cond->> (> (count rows) limit) (take limit))
-                  vec)
-        (seq failed) (with-meta {:hive-milvus/failed-collections failed})))))
+      (read-outcome (vec (take limit (apply-order-by (mapv schema/record->entry rows) order-by))) failed))))
+
+(defn- id-literal
+  "`s` as a Milvus string literal."
+  [s]
+  (str "\"" (-> (str s) (str/replace "\\" "\\\\") (str/replace "\"" "\\\"")) "\""))
+
+(defn- field->key
+  "The entry key a Milvus column name or entry-key name denotes."
+  [f]
+  (keyword (str/replace (name (keyword f)) "_" "-")))
+
+(defn- project-entry
+  "`entry` narrowed to `output-fields` (columns or entry keys); :id survives."
+  [entry output-fields]
+  (if (seq output-fields)
+    (select-keys entry (conj (mapv field->key output-fields) :id))
+    entry))
+
+(defn page-step
+  "One step of a page walk over `colls`, through FETCH
+   (`(fn [coll filter-expr limit] rows)`), for a cursor
+   `{:coll i :after id-or-nil}` (nil starts at the first collection).
+
+   Rows are walked per collection in ascending id order, keyset-style
+   (`id > after`), so a page never holds more than `limit` rows and no offset
+   window caps the walk. The cursor moves past the last id the page READ, not
+   the last it kept: `:keep?` may drop rows (an exact prefix test) while the
+   walk still advances. A page shorter than `limit` closes its collection and
+   moves to the next. Returns `{:rows [raw-row ..] :next-cursor cursor-or-nil}`,
+   `:next-cursor` nil exactly when the last collection is exhausted.
+
+   Raises when a fetched page is not in ascending id order - the keyset walk
+   would silently skip rows - and when the cursor is malformed."
+  [fetch colls base limit keep? cursor]
+  (let [{:keys [coll after] :or {coll 0}} cursor
+        limit (max 1 limit)]
+    (when (and cursor (not (map? cursor)))
+      (throw (ex-info "malformed page cursor" {:cursor cursor})))
+    (if (>= coll (count colls))
+      {:rows [] :next-cursor nil}
+      (let [filt (cond->> (or base "id != \"\"")
+                   after (#(str "(" % ") and id > " (id-literal after))))
+            rows (vec (fetch (nth colls coll) filt limit))
+            ids  (mapv :id rows)]
+        (when-not (= ids (sort ids))
+          (throw (ex-info "Milvus returned a page out of id order; keyset paging cannot continue"
+                          {:error :page/unordered :collection (nth colls coll)})))
+        (let [full? (>= (count rows) limit)
+              more? (or full? (< (inc coll) (count colls)))]
+          {:rows        (filterv keep? rows)
+           :next-cursor (when more?
+                          (if full?
+                            {:coll coll :after (:id (peek rows))}
+                            {:coll (inc coll) :after nil}))})))))
+
+(defn- raise-failure
+  "A `resilient` failure map is not a page or a count: raise it."
+  [what res]
+  (if (and (map? res) (false? (:success? res)))
+    (throw (ex-info (str "milvus " what " failed: " (first (:errors res)))
+                    {:error :milvus/read-failed :detail res}))
+    res))
+
+(defn query-page
+  "IMemoryStorePage: one page of the entries matching `opts` (the query-entries
+   filter keys plus :content-hash-prefix), `{:rows :next-cursor}`. :limit is the
+   page size (default 100, at most `enumerate/max-page`), :output-fields the
+   projection, :cursor nil to start or the previous :next-cursor. Never an empty
+   page for a failure: a collection that cannot answer raises."
+  [config-atom {:keys [limit output-fields cursor content-hash-prefix] :or {limit 100} :as opts}]
+  (raise-failure
+   "query-page"
+   (resilient config-atom
+     (let [colls  (lookup/known-collections config-atom)
+           limit  (min enumerate/max-page (max 1 limit))
+           fields (vec (distinct (concat (or output-fields schema/default-read-fields)
+                                         ["id"]
+                                         (when-not (str/blank? content-hash-prefix)
+                                           ["content_hash"]))))
+           base   (schema/build-filter-expr opts)
+           fetch  (fn [coll filt page-limit]
+                    (try
+                      (d/deref! :query-scalar
+                                (milvus/query-scalar coll
+                                  {:filter filt :limit page-limit :output-fields fields
+                                   :consistency-level :bounded})
+                                (scan-deadline-ms page-limit fields))
+                      (catch Exception e
+                        (if (lookup/missing-collection? e) [] (throw e)))))
+           {:keys [rows next-cursor]}
+           (page-step fetch colls base limit
+                      #(schema/hash-prefix-match? content-hash-prefix %) cursor)]
+       {:rows        (mapv #(project-entry (schema/record->entry %) output-fields) rows)
+        :next-cursor next-cursor}))))
+
+(defn count-entries
+  "IMemoryStoreCount: the exact number of entries matching `opts` (the
+   query-entries filter keys; :limit :order-by :output-fields are ignored),
+   summed over the known collections with a server-side count(*). Raises when
+   a collection cannot answer; a failure is never 0."
+  [config-atom {:keys [content-hash-prefix] :as opts}]
+  (when (and (not (str/blank? content-hash-prefix))
+             (not= content-hash-prefix (schema/hash-prefix-literal content-hash-prefix)))
+    (throw (ex-info "count-entries: :content-hash-prefix holds LIKE wildcards or quotes; count by walking query-page"
+                    {:error :count/inexact-prefix :prefix content-hash-prefix})))
+  (raise-failure
+   "count-entries"
+   (resilient config-atom
+     (let [filt (or (schema/build-filter-expr opts) "id != \"\"")]
+       (reduce
+        (fn [total coll]
+          (+ total
+             (try
+               (let [row (first (d/deref! :query-scalar
+                                          (milvus/query-scalar coll
+                                            {:filter filt :output-fields ["count(*)"] :limit 1})))
+                     n   (get row (keyword "count(*)"))]
+                 (if (nat-int? n)
+                   n
+                   (throw (ex-info "Milvus count aggregation returned no count"
+                                   {:type :milvus/count-unavailable :collection coll :row row}))))
+               (catch Exception e
+                 (if (lookup/missing-collection? e) 0 (throw e))))))
+        0
+        (lookup/known-collections config-atom))))))
 
 (defn search-context
   "The live collaborators a semantic search runs against."
@@ -542,33 +676,19 @@
      :searcher (search-boundary/milvus-vector-search)}))
 
 (defn search-with
-  "Run a semantic search for `query-text` against the collaborators in `ctx`
-   (see `search-pipeline/context`). Returns the entries, best first.
-
-   A target that fails is logged AND carried on the returned vector as
-
-     ^{:hive-milvus/failed-collections [{:collection name :message str} ...]}
-
-   - the key and shape `query-entries` uses. Absent metadata means every
-   target answered, so an empty result is a fact about the data; present
-   metadata means the result is partial and must not be reported as
-   'nothing matches'."
+  "Search entries, best first. Any failed target returns an error Result
+   with diagnostic partial rows, never absence disguised as metadata."
   [ctx query-text opts]
-  (let [{:keys [results failed searched]}
-        (search-pipeline/search ctx (assoc opts :text query-text))]
-    (if (seq failed)
-      (do (log/warn "search: target(s) failed" {:failed failed :searched searched})
-          (with-meta (vec results)
-            {:hive-milvus/failed-collections
-             (mapv (fn [{:keys [collection error] :as f}]
-                     {:collection collection
-                      :message    (str (or (:message f) error))})
-                   failed)}))
-      (vec results))))
+  (let [{:keys [results failed]} (search-pipeline/search ctx (assoc opts :text query-text))]
+    (read-outcome results
+                  (mapv (fn [{:keys [collection error] :as f}]
+                          {:collection collection :message (str (or (:message f) error))})
+                        failed))))
 
 (defn search-similar
-  "Semantic search. Returns entries, best first; a failed target is carried
-   as `:hive-milvus/failed-collections` metadata (see `search-with`)."
+  "Semantic search. Returns entries, best first. A target that failed (a
+   timeout included) makes the result an error Result (see `search-with`),
+   never an empty match vector. `:output-fields` narrows the columns read."
   [config-atom query-text opts]
   (resilient config-atom
     (search-with (search-context config-atom) query-text opts)))

@@ -21,10 +21,11 @@
 
 (defn- ask-one
   "Embed `text` into one target's space and fetch that space's nearest rows.
+   `search-opts` ({:output-fields [..]}) narrows the columns the search returns.
    => r/ok {:space :target :rows [entry+]} | r/err"
-  [{:keys [embedder searcher]} target text filter-expr limit]
+  [{:keys [embedder searcher]} target text filter-expr limit search-opts]
   (r/let-ok [query-vec (b/-embed embedder target text)
-             rows      (b/-search searcher target query-vec filter-expr limit)]
+             rows      (b/-search searcher target query-vec filter-expr limit search-opts)]
     (r/ok {:space  (:space target)
            :target target
            :rows   (mapv schema/record->entry rows)})))
@@ -53,15 +54,18 @@
        :failed   [{:space … :collection … :error …} …]}
 
    `:results` are ordered by fused rank, not by distance. A target that fails is
-   reported in `:failed`; it does not shrink `:results` silently."
-  [ctx {:keys [text limit] :or {limit 10} :as query}]
+   reported in `:failed`; it does not shrink `:results` silently. A query's
+   `:output-fields` narrows the columns every target returns."
+  [ctx {:keys [text limit output-fields] :or {limit 10} :as query}]
   (let [targets     (tgt/-targets (:resolver ctx) query)
         filter-expr (schema/build-filter-expr
                      (cond-> {:include-expired? false}
                        (:type query)         (assoc :type (:type query))
                        (:project-ids query)  (assoc :project-ids (:project-ids query))
                        (:exclude-tags query) (assoc :exclude-tags (:exclude-tags query))))
-        outcomes    (mapv (fn [t] [t (ask-one ctx t text filter-expr limit)]) targets)
+        search-opts (when (seq output-fields)
+                      {:output-fields (vec (distinct (cons "id" output-fields)))})
+        outcomes    (mapv (fn [t] [t (ask-one ctx t text filter-expr limit search-opts)]) targets)
         answered    (for [[_ res] outcomes :when (r/ok? res)] (:ok res))
         failed      (for [[t res] outcomes :when (not (r/ok? res))]
                       {:space (:space t) :collection (:collection t) :error (:error res)})

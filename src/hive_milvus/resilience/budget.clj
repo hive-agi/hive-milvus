@@ -32,6 +32,31 @@
   "Bound on the boot warm-up probe."
   3000)
 
+(def read-deadline-cap-ms
+  "No read's deadline scales past this: a bigger ask is paged, not waited for."
+  30000)
+
+(def search-row-cost-ms
+  "Measured 2026-10-24: a vector search costs about 16 ms per returned row."
+  20)
+
+(def scalar-row-cost-ms
+  "Allowance per row of a scalar scan that returns content."
+  1)
+
+(def projected-row-cost-ms
+  "Allowance per row of a scalar scan that returns scalar fields only."
+  0.25)
+
+(defn read-deadline-ms
+  "Deref bound for a read that asks for `rows` rows at `row-cost-ms` each: the
+   floor `base-ms` plus the cost of the ask, never above `read-deadline-cap-ms`
+   (nor below the floor). A small read keeps the short default; a large one gets
+   the time its size needs instead of an empty answer at the floor."
+  [base-ms rows row-cost-ms]
+  (let [scaled (long (Math/ceil (* (double (max 0 (or rows 0))) (double row-cost-ms))))]
+    (long (max base-ms (min read-deadline-cap-ms (+ base-ms scaled))))))
+
 (defn worst-case-write-ms
   "Longest a resilient write holds its caller: call + wait + retried call."
   []

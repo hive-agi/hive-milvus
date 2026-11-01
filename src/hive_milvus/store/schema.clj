@@ -170,14 +170,34 @@
 ;; Filter Expression Builders
 ;; =========================================================================
 
+(defn hash-prefix-literal
+  "The longest part of `prefix` a Milvus LIKE can match literally: it stops at
+   the first LIKE wildcard (`%`, `_`), and quote and backslash are escaped.
+   Nil when nothing literal is left, so no clause is built. The clause is a
+   coarse server-side narrowing; `hash-prefix-match?` is the exact test."
+  [prefix]
+  (let [lit (first (str/split (str prefix) #"[%_]" 2))]
+    (when-not (str/blank? lit)
+      (-> lit (str/replace "\\" "\\\\") (str/replace "\"" "\\\"")))))
+
+(defn hash-prefix-match?
+  "True when `row`'s content_hash (or entry's :content-hash) starts with `prefix`;
+   always true for a blank prefix."
+  [prefix row]
+  (or (str/blank? prefix)
+      (str/starts-with? (str (or (:content_hash row) (:content-hash row))) prefix)))
+
 (defn build-filter-expr
   "Build a Milvus boolean filter expression from query opts.
    `:created-after` / `:updated-after` (ISO-8601 strings) become server-side
    range clauses — the predicate applies BEFORE the query limit window, so
-   temporal queries cannot be starved by old entries filling the window."
+   temporal queries cannot be starved by old entries filling the window.
+   `:content-hash-prefix` becomes `content_hash like \"prefix%\"` (see
+   `hash-prefix-literal`)."
   [{:keys [type project-id project-ids tags exclude-tags include-expired?
-           created-after updated-after]}]
-  (let [clauses (cond-> []
+           created-after updated-after content-hash-prefix]}]
+  (let [hash-lit (hash-prefix-literal content-hash-prefix)
+        clauses (cond-> []
                   type
                   (conj (str "type == \"" (name type) "\""))
 
@@ -193,6 +213,9 @@
                           (str "project_id in ["
                                (str/join ", " (map #(str "\"" % "\"") project-ids))
                                "]")))
+
+                  hash-lit
+                  (conj (str "content_hash like \"" hash-lit "%\""))
 
                   (and tags (seq tags))
                   (into (map (fn [t] (str "tags like \"%" t "%\"")) tags))

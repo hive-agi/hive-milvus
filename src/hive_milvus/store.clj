@@ -195,6 +195,18 @@
     {:add-entries! (fn [this es]
                      (entries/add-entries! (:config-atom this) es))}))
 
+(when-let [p (some-> (ns-resolve 'hive-spi.memory.ports 'IMemoryStoreCount) deref)]
+  (extend MilvusMemoryStore
+    p
+    {:count-entries (fn [this opts]
+                      (entries/count-entries (:config-atom this) opts))}))
+
+(when-let [p (some-> (ns-resolve 'hive-spi.memory.ports 'IMemoryStorePage) deref)]
+  (extend MilvusMemoryStore
+    p
+    {:query-page (fn [this opts]
+                   (entries/query-page (:config-atom this) opts))}))
+
 (defn create-store
   "Create a new Milvus-backed memory store.
 
