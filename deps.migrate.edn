@@ -4,12 +4,12 @@
         com.taoensso/timbre       {:mvn/version "6.8.0"}
         org.xerial/sqlite-jdbc    {:mvn/version "3.53.4.0"}
         org.slf4j/slf4j-simple    {:mvn/version "2.0.20"}
-        io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}
-        io.github.hive-agi/hive-di {:mvn/version "0.4.19"}
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.37"}}
+        io.github.hive-agi/milvus-clj {:mvn/version "0.3.1"}
+        io.github.hive-agi/hive-di {:mvn/version "0.5.2"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.6.2"}}
 
  :aliases
- {:with-milvus {:extra-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.2.5"}}}
+ {:with-milvus {:extra-deps {io.github.hive-agi/milvus-clj {:mvn/version "0.3.1"}}}
   :dry-run     {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/run-all! {:dry-run? true}))"]}
   :run         {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/run-all! {}))"]}
   :run-single  {:main-opts ["-e" "(do (require '[hive-milvus.migrate :as m]) (m/run! {}))"]}
