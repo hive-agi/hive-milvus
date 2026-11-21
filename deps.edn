@@ -66,7 +66,7 @@
                       ;; The host, TEST-scope only: the suite exercises the
                       ;; wired path alongside the degraded one. Nothing under
                       ;; src/ may require it.
-                      io.github.hive-agi/hive-mcp {:mvn/version "1.17.1"}}
+                      io.github.hive-agi/hive-mcp {:mvn/version "1.18.0"}}
          :main-opts ["-m" "kaocha.runner"]}
 
   ;; Clojars publishing. `clojure -T:build <jar|install|deploy>`. Version =
