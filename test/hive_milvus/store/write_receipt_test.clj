@@ -21,7 +21,7 @@
                   :project-id "scratch" :content-hash "hash"
                   :access-count 3 :helpful-count 2 :unhelpful-count 1}
                  {:id "json-string" :content "{\"a\":1}" :expires ""}
-                 {:id "defaults" :content nil :tags [] :project-id ""}]]
+                 {:id "defaults" :content "d" :tags [] :project-id ""}]]
     (let [s (store/create-store {:collection-name fake/collection})
           receipt (write/add-entry-returning! (:config-atom s) entry)
           fetched (ports/get-entry s (:id receipt))]
@@ -31,6 +31,14 @@
       (is (not (contains? (:entry receipt) :embedding)))
       (when (:created entry) (is (= (:created entry) (:created fetched))))
       (when (:updated entry) (is (= (:updated entry) (:updated fetched)))))))
+
+(deftest blank-content-is-never-written-with-an-empty-vector
+  ;; Before friction 3b6e4010 a nil :content stored a [] vector; against a
+  ;; real collection Milvus refused it ("[]float32 size 0").
+  (let [s (store/create-store {:collection-name fake/collection})]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (write/add-entry-returning! (:config-atom s) {:id "blank" :content nil})))
+    (is (nil? (ports/get-entry s "blank")))))
 
 (deftest ordinary-add-still-returns-id
   (let [s (store/create-store {:collection-name fake/collection})]
