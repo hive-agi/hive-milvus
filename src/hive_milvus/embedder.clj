@@ -8,12 +8,17 @@
    provider lookup + remote embed live behind `hive-milvus.embed.port`.
 
    `embed-for-entry` policy (port-agnostic):
-     blank content => (r/ok [])
+     blank content => (r/ok []), then dim-guarded
      no-embed type => (r/ok zero-vector) sized to the type's routed dim
      otherwise     => `port/embed-entry`, then dim-guarded.
 
+   The dim guard turns an empty or nil vector bound for a collection of
+   known dimension into :embedder/empty-vector, so an empty vector never
+   reaches a Milvus write as a success.
+
    Returns (r/ok vec) or one of
-     :embedder/no-provider  :embedder/embed-failed  :embedder/dim-mismatch."
+     :embedder/no-provider  :embedder/embed-failed  :embedder/dim-mismatch
+     :embedder/empty-vector."
   (:require [clojure.string :as str]
             [clojure.data.json :as json]
             [hive-dsl.result :as r]
@@ -38,23 +43,58 @@
       :else                (str raw))))
 
 (defn- guard-dim
-  "Reject an embedding whose width is not the target collection's (Milvus
-   would 1804, or a same-width foreign vector would index as noise). Empty
-   vectors pass: the caller decides what to do with blank content."
+  "Reject an embedding that cannot be written to `collection-name`.
+
+   When the collection's dimension is known (`naming/dim-of`):
+     an ok Result whose vector is empty or nil
+       => (r/err :embedder/empty-vector {:collection :type :expected})
+          Milvus would refuse it (\"[]float32 size 0 doesn't equal to vector
+          dimension\"), and no caller downstream decides for it: a blank
+          content, a no-op embedder or a provider that answered nil all end
+          here.
+     an ok Result of another width
+       => (r/err :embedder/dim-mismatch {:collection :type :expected :actual})
+          Milvus would 1804, or a same-width foreign vector would index as
+          noise.
+   An unknown dimension leaves the Result as it is; an err passes through."
   [res collection-name entry]
-  (if (and (r/ok? res) (seq (:ok res)))
-    (let [expected (naming/dim-of collection-name)
-          actual   (count (:ok res))]
-      (if (and expected (not= expected actual))
-        (do (log/error "embed-for-entry: dimension mismatch"
-                       {:collection collection-name :expected expected :actual actual})
-            (r/err :embedder/dim-mismatch
-                   {:collection collection-name
-                    :type       (:type entry)
-                    :expected   expected
-                    :actual     actual}))
-        res))
+  (let [expected (naming/dim-of collection-name)]
+    (if-not (and expected (r/ok? res))
+      res
+      (let [v (:ok res)]
+        (cond
+          (empty? v)
+          (do (log/error "embed-for-entry: empty embedding"
+                         {:collection collection-name :type (:type entry) :expected expected})
+              (r/err :embedder/empty-vector
+                     {:collection collection-name
+                      :type       (:type entry)
+                      :expected   expected}))
+
+          (not= expected (count v))
+          (do (log/error "embed-for-entry: dimension mismatch"
+                         {:collection collection-name :expected expected :actual (count v)})
+              (r/err :embedder/dim-mismatch
+                     {:collection collection-name
+                      :type       (:type entry)
+                      :expected   expected
+                      :actual     (count v)}))
+
+          :else res)))))
+
+(defn usable-embedding
+  "`res` unchanged when it is an err or an ok holding a non-empty vector; an
+   ok holding an empty or nil vector becomes (r/err :embedder/empty-vector
+   {:collection :type}). The write-path check that does not depend on the
+   collection's dimension being readable from its name: `guard-dim` already
+   answers the err when it is, and this keeps an empty vector from ever
+   becoming a record when it is not."
+  [res collection-name entry]
+  (if (and (r/ok? res) (empty? (:ok res)))
+    (r/err :embedder/empty-vector {:collection collection-name :type (:type entry)})
     res))
+
+(m/=> usable-embedding [:=> [:cat :map :any :any] :map])
 
 (defn- embed-for-entry*
   [entry collection-name]
@@ -80,6 +120,9 @@
      (r/err :embedder/embed-failed {…})  when the embed call throws
      (r/err :embedder/dim-mismatch {…})  when the vector's width is not the
                                          one `collection-name` holds
+     (r/err :embedder/empty-vector {…})  when the vector is empty or nil and
+                                         `collection-name`'s dimension is
+                                         known (blank content included)
 
    Side-effect: one provider HTTP call (inside the port). Caller passes the
    resulting vector to `schema/entry->record`."
@@ -131,7 +174,7 @@
   "Convenience for legacy call sites that expect an embedding vector (or a
    throw). Prefer `embed-for-entry` in new code so errors stay railway-tracked."
   [entry collection-name]
-  (let [res (embed-for-entry entry collection-name)]
+  (let [res (usable-embedding (embed-for-entry entry collection-name) collection-name entry)]
     (if (r/ok? res)
       (:ok res)
       (throw (ex-info "embed-for-entry failed"

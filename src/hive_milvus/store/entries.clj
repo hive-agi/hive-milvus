@@ -86,18 +86,19 @@
 (defn- write-chunk!
   "Embed and upsert one chunk of [index entry] pairs bound for COLL. Returns
    {index result}. An entry that does not fit the schema is refused before
-   embedding (`guard/refusal`) and answers only for itself; an embed error
-   answers only its own entry; an upsert that refuses the chunk answers
-   every remaining entry of the chunk with the failure."
+   embedding (`guard/refusal`) and answers only for itself; an embed error,
+   an empty or nil vector included (`embedder/usable-embedding`), answers only
+   its own entry and is never part of the upsert; an upsert that refuses
+   the chunk answers every remaining entry of the chunk with the failure."
   [config-atom coll ies]
   (let [es      (mapv second ies)
-        probes  (mapv #(schema/entry->record-pure % coll nil) es)
+        probes  (mapv schema/entry->scalars es)
         ids     (mapv #(or (:id %1) (:id %2)) es probes)
         es      (mapv #(assoc %1 :id %2) es ids)
         refused (mapv #(some-> (guard/refusal %1) (assoc :id %2)) probes ids)
         fit     (filterv #(nil? (refused %)) (range (count es)))
         embs    (when (seq fit) (embedder/embed-for-entries (mapv es fit) coll))
-        emb-of  (zipmap fit embs)
+        emb-of  (zipmap fit (map #(embedder/usable-embedding %2 coll (es %1)) fit embs))
         ok-idx  (filterv #(r/ok? (emb-of %)) fit)
         records (mapv #(schema/entry->record-pure (es %) coll (:ok (emb-of %))) ok-idx)
         landed  (when (seq records)

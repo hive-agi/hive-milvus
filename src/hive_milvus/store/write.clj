@@ -10,9 +10,11 @@
 
 (defn- write-entry!
   "Write once and project the acknowledged record through `result`.
-   Refusals and retry failures bypass the projection unchanged."
+   Refusals and retry failures bypass the projection unchanged. An entry
+   whose embedding fails, an empty vector included, raises from
+   `schema/entry->record` before anything is sent."
   [config-atom entry result]
-  (or (guard/refusal (schema/entry->record-pure entry nil nil))
+  (or (guard/refusal (schema/entry->scalars entry))
       (resilient-within config-atom budget/reconnect-wait-ms
         (let [coll-name (routing/ensure-routed! (:type entry))
               record (schema/entry->record entry coll-name)]
