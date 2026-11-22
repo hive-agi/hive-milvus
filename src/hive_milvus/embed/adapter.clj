@@ -149,6 +149,14 @@
         (mapv r/ok batch)
         (mapv #(port/-embed-entry this %1 collection-name %2) entries contents)))))
 
+(host/defsoft space-for-resolved
+  'hive-mcp.embeddings.service/space-for-resolved :absent (constantly nil))
+
+(extend-type HiveMcpEmbedder
+  port/IEmbedderSpace
+  (-space-for-routing [_ routing]
+    (space-for-resolved (select-keys routing [:provider-key :dimension]))))
+
 (defn available?
   "True when the host's embedding service is on the classpath right now."
   []
