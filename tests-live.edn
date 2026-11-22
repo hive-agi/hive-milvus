@@ -1,0 +1,6 @@
+;; Kaocha config for the ^:live suite only: needs a Milvus on localhost:19530
+;; (k8s port-forward or local). `clojure -M:test --config-file tests-live.edn`
+#kaocha/v1
+{:tests [{:id         :live
+          :test-paths ["test"]
+          :focus-meta [:live]}]}
