@@ -35,11 +35,13 @@
           :hint          "Two providers route to the same collection name with different dims; check :embedder :providers"}))
 
 (defn- create-now!
-  "Imperative create-or-load delegated to `store.index`. Returns
+  "Imperative create-or-load delegated to `store.index`; a ref carrying
+   :coll/space (an EmbeddingSpace) is stamped or admitted by that space
+   (see `store.index/ensure-collection!`). Returns
    `(ok ref)` on success; converts a throw into `:collection/ensure-failed`."
   [{:keys [:coll/name :coll/dim] :as ref}]
   (try
-    (index/ensure-collection! name dim)
+    (index/ensure-collection! name dim (:coll/space ref))
     (register-dim! name dim)
     (r/ok ref)
     (catch Throwable t

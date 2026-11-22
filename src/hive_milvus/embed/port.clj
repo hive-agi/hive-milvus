@@ -134,6 +134,27 @@
       "ENTRIES and CONTENTS are parallel sequentials. Returns a vector of
        Results, one per entry in order: (r/ok vec) | (r/err kw {...}).")))
 
+(defonce ^:private -iembedderspace-defined? (atom false))
+
+(when (compare-and-set! -iembedderspace-defined? false true)
+  (defprotocol IEmbedderSpace
+    "Optional extension of IEmbedder: name the embedding space a routed
+     provider writes, so a collection can be stamped with it and checked
+     on open (hive-milvus.store.space)."
+    (-space-for-routing [this routing]
+      "ROUTING is a `routing-for-type` map. Returns an EmbeddingSpace map
+       (hive-spi.embeddings.space) or nil when the space cannot be named.")))
+
+(defn space-for-routing
+  "The EmbeddingSpace the provider of ROUTING writes, or nil: nil when the
+   installed embedder cannot name spaces (the Noop default, an older host)
+   or the lookup throws. A nil space leaves the collection unguarded."
+  [routing]
+  (let [e (current)]
+    (when (and routing (satisfies? IEmbedderSpace e))
+      (try (-space-for-routing e routing)
+           (catch Throwable _ nil)))))
+
 (defn batch-capable?
   "True when the installed embedder can embed a batch in one call."
   []

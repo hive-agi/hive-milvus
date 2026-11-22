@@ -95,12 +95,20 @@
     (coll-for-type (:type entry))
     (coll-for-type+size (:type entry) (entry-content-str entry))))
 
+(defn space-for
+  "The EmbeddingSpace the provider of ROUTED (a `coll-for-type` map) writes,
+   or nil: the :fallback routing names no provider, and the embedding port
+   may be unable to name spaces. A nil space leaves the collection unguarded."
+  [{:keys [provider-key] :as routed}]
+  (when (and provider-key (not= :fallback provider-key))
+    (port/space-for-routing routed)))
+
 (defn ensure-routed!
   "Ensure the routed Milvus collection exists with the correct dimension
    and is loaded + scalar-indexed. Returns the collection name."
   [memory-type]
-  (let [{:keys [collection-name dimension]} (coll-for-type memory-type)]
-    (index/ensure-collection! collection-name dimension)
+  (let [{:keys [collection-name dimension] :as routed} (coll-for-type memory-type)]
+    (index/ensure-collection! collection-name dimension (space-for routed))
     collection-name))
 
 (defn all-known-collections

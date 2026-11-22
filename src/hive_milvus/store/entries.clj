@@ -127,8 +127,10 @@
   (let [es    (vec entries)
         cap   (max 1 (or (:batch-records @config-atom) default-batch-records))
         by-ix (reduce
-               (fn [acc [{:keys [collection-name dimension]} ies]]
-                 (let [ensured (try (index/ensure-collection! collection-name dimension) nil
+               (fn [acc [{:keys [collection-name dimension] :as routed} ies]]
+                 (let [ensured (try (index/ensure-collection! collection-name dimension
+                                                              (routing/space-for routed))
+                                    nil
                                     (catch Exception e
                                       {:success? false :error :milvus/ensure-failed
                                        :errors [(or (ex-message e) (str (class e)))]}))]
