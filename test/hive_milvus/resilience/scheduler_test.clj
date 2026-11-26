@@ -12,7 +12,7 @@
             [hive-milvus.resilience.retry :as retry]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
-;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; SPDX-License-Identifier: MIT
 
 ;; The scheduler-state is a process-global defonce — make sure no test leaks a
 ;; running timer into the next one.
