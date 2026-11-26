@@ -20,6 +20,7 @@
   (:require [hive-addon.protocol :as addon-proto]
             [hive-spi.memory.ports :as mem-ports]
             [hive-spi.memory.registry :as mem-reg]
+            [hive-milvus.auth :as auth]
             [hive-milvus.config :as config]
             [hive-milvus.store :as store]
             [hive-dsl.result :as r]
@@ -59,7 +60,7 @@
             {:success? false
              :errors (or (seq errs) [(pr-str resolution)])
              :metadata {:backend "milvus"}})
-          (let [resolved (:ok resolution)
+          (let [resolved (auth/with-effective-token (:ok resolution))
                 store-config (select-keys resolved [:host :port :collection-name
                                                     :token :database :secure
                                                     :transport])]

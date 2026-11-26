@@ -55,9 +55,19 @@
    :max-tokens      2048
    :provider-key    :noop})
 
+(defn- no-provider
+  "The err the no-op embedder answers for any embed: no host has installed
+   an embedder, so no vector exists to write."
+  [collection-name]
+  (r/err :embedder/no-provider
+         {:collection collection-name
+          :hint       (str "no embedder installed: the host must call"
+                           " hive-milvus.embed.port/set-embedder! (hive-milvus.embed.adapter/install!)"
+                           " before a write is embedded")}))
+
 (defrecord NoopEmbedder []
   IEmbedder
-  (-embed-entry [_ _entry _collection-name _content] (r/ok []))
+  (-embed-entry [_ _entry collection-name _content] (no-provider collection-name))
   (-embed-text [_ _collection-name _text] [])
   (-routing-for-type [_ _memory-type] default-routing)
   (-routing-for-type+size [_ _memory-type _content] default-routing)
@@ -133,6 +143,32 @@
     (-embed-entries [this entries collection-name contents]
       "ENTRIES and CONTENTS are parallel sequentials. Returns a vector of
        Results, one per entry in order: (r/ok vec) | (r/err kw {...}).")))
+
+(extend-type NoopEmbedder
+  IEmbedderBatch
+  (-embed-entries [_ entries collection-name _contents]
+    (mapv (fn [_] (no-provider collection-name)) entries)))
+
+(defonce ^:private -iembedderspace-defined? (atom false))
+
+(when (compare-and-set! -iembedderspace-defined? false true)
+  (defprotocol IEmbedderSpace
+    "Optional extension of IEmbedder: name the embedding space a routed
+     provider writes, so a collection can be stamped with it and checked
+     on open (hive-milvus.store.space)."
+    (-space-for-routing [this routing]
+      "ROUTING is a `routing-for-type` map. Returns an EmbeddingSpace map
+       (hive-spi.embeddings.space) or nil when the space cannot be named.")))
+
+(defn space-for-routing
+  "The EmbeddingSpace the provider of ROUTING writes, or nil: nil when the
+   installed embedder cannot name spaces (the Noop default, an older host)
+   or the lookup throws. A nil space leaves the collection unguarded."
+  [routing]
+  (let [e (current)]
+    (when (and routing (satisfies? IEmbedderSpace e))
+      (try (-space-for-routing e routing)
+           (catch Throwable _ nil)))))
 
 (defn batch-capable?
   "True when the installed embedder can embed a batch in one call."

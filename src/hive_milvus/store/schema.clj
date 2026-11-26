@@ -73,21 +73,15 @@
     (try (json/read-str s :key-fn keyword)
          (catch Exception _ []))))
 
-(defn entry->record-pure
-  "PURE: Convert a memory entry + a precomputed embedding vector into a
-   Milvus insert record. Performs NO embedding lookup, NO provider
-   resolution, NO I/O — the caller is responsible for producing the
-   embedding via `hive-milvus.embedder/embed-for-entry` first.
-
-   Splits CPPB stages: this fn is PROMOTE only; the embedding side of
-   the record (BOUNDARY) lives in `hive-milvus.embedder`. Callers that
-   skip the embed step ship a record with an empty vector (suitable
-   for tests / id-only updates that intentionally don't re-vectorize)."
-  [entry _collection-name embedding]
+(defn entry->scalars
+  "PURE: every field of the Milvus record for `entry` except :embedding. The
+   write path sizes this against the schema (`guard/refusal`) before it
+   embeds; it is never written, because a record without a vector is not
+   one Milvus can take."
+  [entry]
   (let [raw-content (or (:content entry) "")
         content     (if (map? raw-content) (json/write-str raw-content) (str raw-content))]
     {:id              (or (:id entry) (generate-id))
-     :embedding       (or embedding [])
      :document        ""
      :type            (or (some-> (:type entry) name) "note")
      :tags            (tags->str (:tags entry))
@@ -101,6 +95,29 @@
      :helpful_count   (or (:helpful-count entry) 0)
      :unhelpful_count (or (:unhelpful-count entry) 0)
      :project_id      (or (:project-id entry) "")}))
+
+(defn entry->record-pure
+  "PURE: Convert a memory entry + a precomputed embedding vector into a
+   Milvus insert record. Performs NO embedding lookup, NO provider
+   resolution, NO I/O — the caller is responsible for producing the
+   embedding via `hive-milvus.embedder/embed-for-entry` first.
+
+   Splits CPPB stages: this fn is PROMOTE only; the embedding side of
+   the record (BOUNDARY) lives in `hive-milvus.embedder`.
+
+   An empty or nil `embedding` throws ex-info {:error :schema/empty-embedding}:
+   every record this builds is bound for a Milvus write, and Milvus refuses
+   a vector of size 0 against the collection's dimension. A caller that only
+   needs the scalar fields (the size guard) uses `entry->scalars`."
+  [entry collection-name embedding]
+  (when (empty? embedding)
+    (throw (ex-info (str "entry->record-pure: empty embedding for entry "
+                         (pr-str (:id entry)) " bound for " (pr-str collection-name))
+                    {:error      :schema/empty-embedding
+                     :id         (:id entry)
+                     :type       (:type entry)
+                     :collection collection-name})))
+  (assoc (entry->scalars entry) :embedding embedding))
 
 (defn entry->record
   "LEGACY FACADE — invokes the BOUNDARY embedder then builds the record.

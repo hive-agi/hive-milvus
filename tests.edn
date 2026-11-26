@@ -1,0 +1,14 @@
+;; Kaocha config for `clojure -M:test`.
+;;
+;; The ^:live namespaces (contract-runner, consistency, mutation, property,
+;; memory-conformance) open a MilvusMemoryStore on localhost:19530 and need a
+;; running Milvus. Without one they fail on an open circuit, so a bare
+;; `clojure -M:test` could not gate a branch. They are skipped here, exactly
+;; as CI already runs them (`clojure -M:test --skip-meta :live`).
+;;
+;; Run the live suite against a reachable Milvus with:
+;;   clojure -M:test --config-file tests-live.edn
+#kaocha/v1
+{:tests [{:id         :unit
+          :test-paths ["test"]
+          :skip-meta  [:live]}]}

@@ -44,7 +44,8 @@
   [{:keys [entry target-coll kept-embedding] :as bundle}]
   (let [emb-res (if (seq kept-embedding)
                   (r/ok kept-embedding)
-                  (embedder/embed-for-entry entry target-coll))]
+                  (embedder/usable-embedding
+                   (embedder/embed-for-entry entry target-coll) target-coll entry))]
     (if (r/ok? emb-res)
       (let [embedding (:ok emb-res)
             record    (schema/entry->record-pure entry target-coll embedding)]

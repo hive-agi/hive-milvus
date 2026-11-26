@@ -36,6 +36,14 @@
                          :type :string
                          :required false
                          :doc "Auth token (Zilliz Cloud / RBAC). Optional.")
+  :user             (env "MILVUS_USER"
+                         :type :string
+                         :required false
+                         :doc "RBAC user. With :password, composes token user:password when :token is unset.")
+  :password         (env "MILVUS_PASSWORD"
+                         :type :string
+                         :required false
+                         :doc "RBAC password, plain or a \"pass:<path>\" password-store ref.")
   :database         (env "MILVUS_DATABASE"
                          :default "default"
                          :type :string
